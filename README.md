@@ -1,6 +1,6 @@
 <h1 align="center">agent-wow</h1>
 
-![agent-wow cover photo](https://i.imgur.com/yX8JUyz.png)
+![agent-wow cover photo](https://i.imgur.com/8PSovK0.png)
 
 <h3 align="center">AzerothCore WoW client designed for autonomous AI agent players.</h3>
 
