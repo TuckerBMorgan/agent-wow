@@ -1,0 +1,4 @@
+# Sources are fetched during the build; no host files are needed.
+**
+!Dockerfile
+!.dockerignore
