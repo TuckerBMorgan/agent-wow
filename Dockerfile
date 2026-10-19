@@ -17,9 +17,13 @@
 # natively. Only the AzerothCore services below require amd64 emulation on ARM.
 # First startup downloads server images/game data and imports the databases.
 # Allow several GB of disk and 10-20 minutes for that first startup.
-# config/codex.env supplies CODEX_API_KEY at runtime; browser login is skipped.
+# config/codex.env supplies CODEX_API_KEY for the default OpenAI provider.
+# For OpenRouter, supply OPENROUTER_API_KEY, CODEX_MODEL_PROVIDER=openrouter,
+# and CODEX_MODEL=<OpenRouter model ID> as runtime environment variables.
+# config/openrouter.env holds the local key for --env-file; upload its AWS copy
+# with python3 upload-openrouter-key.py after applying main.tf.
 # Keep this file private and supply a valid key on each deployment.
-# If CODEX_API_KEY is absent, startup reuses a saved ChatGPT login or displays
+# With OpenAI, if CODEX_API_KEY is absent, startup reuses a saved ChatGPT login or displays
 # a device-login URL/code. That optional login persists in agent-wow-codex.
 # The agent builds gameplay modules, creates an orc warrior, and works through
 # the Valley of Trials quests. Progress and reports persist under /workspace.
@@ -263,16 +267,41 @@ fi
 umask 077
 mkdir -p /root/.codex /root/.cache /root/.docker /root/go /workspace/logs/agent
 
-# codex exec reads CODEX_API_KEY directly from the runtime environment.
-# File storage is used only for the optional ChatGPT login fallback.
-codex_cli=(codex --config 'cli_auth_credentials_store="file"')
-if [[ ${CODEX_API_KEY+x} ]]; then
-    if [[ -z "$CODEX_API_KEY" ]]; then
+provider=${CODEX_MODEL_PROVIDER:-openai}
+model=${CODEX_MODEL:-}
+case "$provider" in
+    openai) unset OPENROUTER_API_KEY ;;
+    openrouter) unset CODEX_API_KEY OPENAI_API_KEY ;;
+    *) echo 'CODEX_MODEL_PROVIDER must be openai or openrouter.' >&2; exit 2 ;;
+esac
+if [[ ${CODEX_MODEL+x} && ( ! "$model" =~ ^[A-Za-z0-9_./:~+-]+$ || "$model" == -* ) ]]; then
+    echo 'CODEX_MODEL must be a nonempty model ID without whitespace or shell options.' >&2
+    exit 2
+fi
+
+# CLI overrides preserve existing user configuration. Command-backed auth
+# gives Codex the OpenRouter model catalog without putting the key in TOML.
+codex_cli=(codex --config 'cli_auth_credentials_store="file"' \
+    --config "model_provider=\"$provider\"")
+if [[ "$provider" == openrouter ]]; then
+    if [[ ! "${OPENROUTER_API_KEY:-}" =~ [^[:space:]] ]]; then
+        echo 'OpenRouter requires a nonempty OPENROUTER_API_KEY.' >&2
+        exit 1
+    fi
+    if [[ -z "$model" ]]; then
+        echo 'OpenRouter requires CODEX_MODEL with an OpenRouter model ID.' >&2
+        exit 2
+    fi
+    codex_cli+=(--config 'model_providers.openrouter={name="OpenRouter",base_url="https://openrouter.ai/api/v1",wire_api="responses",auth={command="printenv",args=["OPENROUTER_API_KEY"]}}')
+    echo 'Using the runtime OpenRouter API key; browser sign-in is skipped.'
+elif [[ ${CODEX_API_KEY+x} ]]; then
+    if [[ ! "$CODEX_API_KEY" =~ [^[:space:]] ]]; then
         echo 'CODEX_API_KEY is empty. Supply a valid key through --env-file ./config/codex.env.' >&2
         exit 1
     fi
     echo 'Using the runtime API key for Codex; browser sign-in is skipped.'
 else
+    # Local OpenAI runs can fall back to a saved ChatGPT/device login.
     if ! "${codex_cli[@]}" login status >/dev/null 2>&1; then
         echo 'Sign in using the device-login URL and code below. The game task will start after sign-in.'
         if ! "${codex_cli[@]}" login --device-auth; then
@@ -285,6 +314,7 @@ else
         exit 1
     fi
 fi
+if [[ -n "$model" ]]; then codex_cli+=(--model "$model"); fi
 
 run_dir=$(mktemp -d "/workspace/logs/agent/$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")
 if (( $# == 1 )); then
@@ -293,6 +323,7 @@ else
     cp /opt/orc-quest-task.txt "$run_dir/task.txt"
 fi
 echo "Starting the game task. Run log: $run_dir/agent.log"
+echo "Codex provider: $provider; model: ${model:-Codex default}"
 
 # Keep the workspace sandbox, allowing the local Docker socket and build caches.
 # Network access is required for the game connection and module dependencies.
@@ -323,7 +354,8 @@ BASH
 
 RUN /opt/venv/bin/pip install --no-cache-dir boto3
 
-# AWS Batch workers are disposable. Export only reports and quest evidence;
+# AWS Batch loads the selected API key at runtime using its job role.
+# Workers are disposable. Export only reports and quest evidence;
 # credentials, databases, and Codex login/session directories stay local.
 COPY --chmod=755 <<'PYTHON' /usr/local/bin/run-batch-job
 #!/opt/venv/bin/python3
@@ -346,18 +378,23 @@ class Results:
         self.bucket = bucket
         self.prefix = f'runs/{job_id}'
         self.workspace = workspace
-        self.secret = os.environ.get('CODEX_API_KEY', '').encode()
+        self.secrets = sorted({
+            value.encode() for name in ('CODEX_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY')
+            if (value := os.environ.get(name))
+        }, key=len, reverse=True)
         self.uploaded = {}
 
     def put(self, key, data):
-        if self.secret:
-            data = data.replace(self.secret, b'[REDACTED]')
+        for secret in self.secrets:
+            data = data.replace(secret, b'[REDACTED]')
         self.client.put_object(Bucket=self.bucket, Key=f'{self.prefix}/{key}', Body=data)
 
     def status(self, state, exit_code=None):
         self.put('status.json', json.dumps({
             'state': state,
             'process_exit_code': exit_code,
+            'provider': os.environ.get('CODEX_MODEL_PROVIDER', 'openai'),
+            'model_override': os.environ.get('CODEX_MODEL'),
             'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
             'quest_completion': 'Verify server-confirmed turn-ins in journal; exit 0 alone is not proof.',
         }).encode())
@@ -462,12 +499,33 @@ def run(results, command):
 def main():
     bucket = os.environ.get('AWS_RESULTS_BUCKET')
     job_id = os.environ.get('AWS_BATCH_JOB_ID')
-    if not bucket or not job_id or not os.environ.get('CODEX_API_KEY'):
-        print('Batch requires AWS_RESULTS_BUCKET, AWS_BATCH_JOB_ID, and a nonempty CODEX_API_KEY.', flush=True)
+    if not bucket or not job_id:
+        print('Batch requires AWS_RESULTS_BUCKET and AWS_BATCH_JOB_ID.', flush=True)
         return 1
-    client = boto3.client('s3', config=Config(
+    provider = os.environ.get('CODEX_MODEL_PROVIDER', 'openai')
+    key_name, secret_name = {
+        'openai': ('CODEX_API_KEY', 'CODEX_SECRET_ARN'),
+        'openrouter': ('OPENROUTER_API_KEY', 'OPENROUTER_SECRET_ARN'),
+    }.get(provider, (None, None))
+    if key_name is None:
+        print('CODEX_MODEL_PROVIDER must be openai or openrouter.', flush=True)
+        return 2
+    if provider == 'openrouter' and not os.environ.get('CODEX_MODEL', '').strip():
+        print('OpenRouter requires CODEX_MODEL with an OpenRouter model ID.', flush=True)
+        return 2
+    client_config = Config(
         connect_timeout=3, read_timeout=5, retries={'total_max_attempts': 1},
-    ))
+    )
+    # ARNs are safe job configuration; the key stays in memory and is inherited
+    # only by this job's child process. Local runs can supply the key directly.
+    secret_arn = os.environ.get(secret_name)
+    if not os.environ.get(key_name) and secret_arn:
+        secrets = boto3.client('secretsmanager', config=client_config)
+        os.environ[key_name] = secrets.get_secret_value(SecretId=secret_arn)['SecretString']
+    if not os.environ.get(key_name, '').strip():
+        print(f'Batch requires a nonempty {key_name} for {provider}.', flush=True)
+        return 1
+    client = boto3.client('s3', config=client_config)
     results = Results(client, bucket, job_id)
     print(f'Results: s3://{bucket}/runs/{job_id}/', flush=True)
     return run(results, ['/usr/local/bin/start-agent-workspace', *sys.argv[1:]])
@@ -509,7 +567,7 @@ if [[ ! -f /workspace/server/.env ]]; then
         > /workspace/server/.env
 fi
 cp /opt/server/compose.yaml /workspace/server/compose.yaml
-compose=(env -u CODEX_API_KEY docker compose --project-directory /workspace/server -f /workspace/server/compose.yaml)
+compose=(env -u CODEX_API_KEY -u OPENAI_API_KEY -u OPENROUTER_API_KEY docker compose --project-directory /workspace/server -f /workspace/server/compose.yaml)
 
 # Start a real local daemon so module bind mounts resolve in this filesystem.
 # Share image layers on the dedicated ext4 /var/lib/docker volume.
@@ -554,7 +612,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-env -u CODEX_API_KEY dockerd --host=unix:///var/run/docker.sock \
+env -u CODEX_API_KEY -u OPENAI_API_KEY -u OPENROUTER_API_KEY dockerd --host=unix:///var/run/docker.sock \
     --feature=containerd-snapshotter=false --storage-driver=overlay2 \
     > /workspace/logs/dockerd.log 2>&1 &
 daemon_pid=$!
@@ -587,7 +645,7 @@ if [[ "$ready" != true ]]; then
     echo 'Game server startup timed out. Inspect docker compose logs in /workspace/server.' >&2
     exit 1
 fi
-env -u CODEX_API_KEY prepare-wow-account
+env -u CODEX_API_KEY -u OPENAI_API_KEY -u OPENROUTER_API_KEY prepare-wow-account
 
 cat <<'MESSAGE'
 
@@ -598,9 +656,11 @@ Workspace ready in /workspace.
   server source:         /workspace/azerothcore-reference
   logs and records:      /workspace/logs and /workspace/journal
 
-The default command starts the game task using CODEX_API_KEY when supplied.
+The default command starts the game task using the selected Codex provider.
+OpenAI uses CODEX_API_KEY. OpenRouter uses OPENROUTER_API_KEY and CODEX_MODEL.
+Set CODEX_MODEL_PROVIDER=openrouter to select OpenRouter (default: openai).
 Pass a quoted prompt to run-wow-agent to override the image's default task.
-Without an API key, it uses a saved ChatGPT login or requests device login.
+OpenAI without an API key uses a saved ChatGPT login or requests device login.
 Agent logs and final reports are stored in /workspace/logs/agent.
 MESSAGE
 

@@ -11,7 +11,7 @@ from unittest import mock
 
 
 REPOSITORY = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location('watch_job', REPOSITORY / 'watch-job.py')
+SPEC = importlib.util.spec_from_file_location('launch', REPOSITORY / 'launch.py')
 watcher = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(watcher)
 
@@ -199,9 +199,54 @@ class WatchJobTests(unittest.TestCase):
             with self.assertRaisesRegex(watcher.AwsError, 'ExpiredToken'):
                 watcher.aws(REGION, 'batch', 'describe-jobs', '--jobs', JOB_ID)
 
+    def test_ssl_eof_is_retried_then_returns_response(self):
+        failed = subprocess.CompletedProcess([], 255, stdout='', stderr=(
+            'SSL validation failed: [SSL: UNEXPECTED_EOF_WHILE_READING] '
+            'EOF occurred in violation of protocol'
+        ))
+        success = subprocess.CompletedProcess([], 0, stdout='{"jobs": []}', stderr='')
+        with mock.patch.object(watcher.subprocess, 'run', side_effect=[failed, success]) as run, \
+             mock.patch.object(watcher.time, 'sleep') as sleep, \
+             contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(watcher.aws(REGION, 'batch', 'describe-jobs', '--jobs', JOB_ID), {'jobs': []})
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args_list[0].args, run.call_args_list[1].args)
+        sleep.assert_called_once_with(2)
+
+    def test_request_timeout_is_retried_without_restarting_job(self):
+        timeout = subprocess.TimeoutExpired(['aws'], 40)
+        success = subprocess.CompletedProcess([], 0, stdout='{"jobs": []}', stderr='')
+        with mock.patch.object(watcher.subprocess, 'run', side_effect=[timeout, success]) as run, \
+             mock.patch.object(watcher.time, 'sleep') as sleep, \
+             contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(watcher.aws(REGION, 'batch', 'describe-jobs', '--jobs', JOB_ID), {'jobs': []})
+        self.assertTrue(all(call.args[0][1:3] == ['batch', 'describe-jobs'] for call in run.call_args_list))
+        sleep.assert_called_once_with(2)
+
+    def test_transient_retries_are_bounded(self):
+        failed = subprocess.CompletedProcess([], 255, stdout='', stderr='Connection reset by peer')
+        with mock.patch.object(watcher.subprocess, 'run', return_value=failed) as run, \
+             mock.patch.object(watcher.time, 'sleep') as sleep, \
+             contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaisesRegex(watcher.AwsError, 'Connection reset'):
+                watcher.aws(REGION, 'batch', 'describe-jobs', '--jobs', JOB_ID)
+        self.assertEqual(run.call_count, 6)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [2, 4, 8, 16, 30])
+
+    def test_permission_and_certificate_errors_are_not_retried(self):
+        for error in ('AccessDeniedException', 'ExpiredToken', 'SSL: CERTIFICATE_VERIFY_FAILED'):
+            with self.subTest(error=error):
+                failed = subprocess.CompletedProcess([], 254, stdout='', stderr=error)
+                with mock.patch.object(watcher.subprocess, 'run', return_value=failed) as run, \
+                     mock.patch.object(watcher.time, 'sleep') as sleep:
+                    with self.assertRaises(watcher.AwsError):
+                        watcher.aws(REGION, 'batch', 'describe-jobs', '--jobs', JOB_ID)
+                run.assert_called_once()
+                sleep.assert_not_called()
+
     def test_main_reports_aws_errors_and_nonzero_exit(self):
         output = io.StringIO()
-        with mock.patch.object(sys, 'argv', ['watch-job.py', JOB_ID]):
+        with mock.patch.object(sys, 'argv', ['launch.py', '--watch', JOB_ID]):
             with mock.patch.object(watcher, 'follow', side_effect=watcher.AwsError('AccessDenied: view job')):
                 with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
                     self.assertEqual(watcher.main(), 1)
@@ -209,7 +254,7 @@ class WatchJobTests(unittest.TestCase):
 
     def test_ctrl_c_stops_watching_without_cancelling_job(self):
         output = io.StringIO()
-        with mock.patch.object(sys, 'argv', ['watch-job.py', JOB_ID]):
+        with mock.patch.object(sys, 'argv', ['launch.py', '--watch', JOB_ID]):
             with mock.patch.object(watcher, 'aws', side_effect=KeyboardInterrupt) as api:
                 with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
                     self.assertEqual(watcher.main(), 130)

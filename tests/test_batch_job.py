@@ -101,6 +101,29 @@ class BatchJobTests(unittest.TestCase):
         self.assertTrue(all(call['Bucket'] == 'test-results' for call in self.client.calls))
         self.assertNotIn(FAKE_KEY.encode(), b''.join(self.client.objects.values()))
 
+    def test_loads_only_the_selected_provider_secret(self):
+        for provider, key_name, arn in (
+            ('openai', 'CODEX_API_KEY', 'fake-openai-secret'),
+            ('openrouter', 'OPENROUTER_API_KEY', 'fake-openrouter-secret'),
+        ):
+            with self.subTest(provider=provider):
+                secrets = mock.Mock()
+                secrets.get_secret_value.return_value = {'SecretString': FAKE_KEY}
+                environment = {
+                    'AWS_RESULTS_BUCKET': 'test-results', 'AWS_BATCH_JOB_ID': 'test-job',
+                    'CODEX_MODEL_PROVIDER': provider, 'CODEX_MODEL': 'test-model',
+                    'CODEX_SECRET_ARN': 'fake-openai-secret',
+                    'OPENROUTER_SECRET_ARN': 'fake-openrouter-secret',
+                }
+                with mock.patch.dict(os.environ, environment, clear=True), \
+                     mock.patch.object(WRAPPER.boto3, 'client', side_effect=[secrets, self.client]), \
+                     mock.patch.object(WRAPPER, 'run', return_value=0):
+                    self.assertEqual(WRAPPER.main(), 0)
+                    self.assertEqual(os.environ[key_name], FAKE_KEY)
+                    other_key = 'OPENROUTER_API_KEY' if provider == 'openai' else 'CODEX_API_KEY'
+                    self.assertNotIn(other_key, os.environ)
+                secrets.get_secret_value.assert_called_once_with(SecretId=arn)
+
     def test_skips_symlink_files_directories_and_fifo(self):
         outside = Path(self.directory.name) / 'private'
         outside.mkdir()

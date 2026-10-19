@@ -1,4 +1,4 @@
-"""Credential-free tests for runtime prompts and the AWS launch scripts.
+"""Credential-free tests for runtime prompts and the AWS launcher.
 
 Run with: python3 -m unittest discover -s tests -p 'test_prompt_launch.py'
 Every external service command is replaced by a local stub. No image is built,
@@ -66,10 +66,14 @@ elif tool == 'docker':
         sys.stdin.buffer.read()
     elif args[:2] != ['buildx', 'build']:
         raise SystemExit('Unexpected Docker call in test: ' + repr(args))
+    elif os.environ.get('WOW_TEST_BUILD_EXIT'):
+        raise SystemExit(int(os.environ['WOW_TEST_BUILD_EXIT']))
 elif tool == 'tofu':
     if args == ['output', '-raw', 'job_definition']:
         print(os.environ['WOW_TEST_NEW_DEFINITION'])
-    elif args != ['apply']:
+    elif args == ['output', '-raw', 'ecr_repository_url']:
+        print('123456789012.dkr.ecr.us-west-2.amazonaws.com/agent-wow')
+    elif args != ['apply', '-auto-approve', '-input=false']:
         raise SystemExit('Unexpected OpenTofu call in test: ' + repr(args))
 elif tool == 'git':
     if args == ['rev-parse', 'HEAD']:
@@ -78,16 +82,47 @@ elif tool == 'git':
         raise SystemExit('Unexpected Git call in test: ' + repr(args))
 elif tool == 'codex':
     if 'exec' in args:
+        (root / 'codex-key-names.json').write_text(json.dumps([
+            name for name in ('CODEX_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY')
+            if os.environ.get(name)
+        ]))
         (root / 'codex-stdin').write_bytes(sys.stdin.buffer.read())
         Path(option('--output-last-message')).write_text('local test report\n')
         print('local test agent output')
         raise SystemExit(int(os.environ.get('WOW_TEST_CODEX_EXIT', '0')))
     elif 'login' not in args:
         raise SystemExit('Unexpected Codex call in test: ' + repr(args))
-elif tool == 'watch-job.py':
-    raise SystemExit(int(os.environ.get('WOW_TEST_WATCH_EXIT', '0')))
 else:
     raise SystemExit('Unknown test command: ' + tool)
+'''
+
+
+RUNNER = r'''
+import importlib.util
+import json
+import os
+from pathlib import Path
+import sys
+
+root = Path(os.environ['WOW_TEST_DIR'])
+spec = importlib.util.spec_from_file_location('launch', root / 'project/launch.py')
+launcher = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(launcher)
+
+def follow(job_id, region, log_group):
+    with (root / 'calls.jsonl').open('a') as log:
+        log.write(json.dumps({'tool': 'watch', 'args': [
+            job_id, '--region', region, '--log-group', log_group,
+        ]}) + '\n')
+    status = int(os.environ.get('WOW_TEST_WATCH_EXIT', '0'))
+    if status == 130:
+        raise KeyboardInterrupt
+    return status
+
+# Watching has its own mocked AWS tests. Exercise the real launcher entry point
+# while replacing the wait loop so this fixture cannot contact a live service.
+launcher.follow = follow
+sys.exit(launcher.main())
 '''
 
 
@@ -116,12 +151,8 @@ class PromptLaunchTests(unittest.TestCase):
             executable.chmod(0o755)
         self.project = self.root / 'project'
         self.project.mkdir()
-        for script in ('launch.sh', 'rebuild-and-launch.sh'):
-            shutil.copyfile(REPOSITORY / script, self.project / script)
-            (self.project / script).chmod(0o755)
-        # The watcher has its own mocked AWS tests. Keep this fixture focused
-        # on forwarding the newly submitted job ID and its exit status.
-        (self.project / 'watch-job.py').write_text(STUB)
+        shutil.copyfile(REPOSITORY / 'launch.py', self.project / 'launch.py')
+        (self.project / 'launch-runner.py').write_text(RUNNER)
         # Never inherit real credentials, profiles, keys, or user configuration.
         self.env = {
             'PATH': str(self.bin) + ':/usr/bin:/bin:/usr/sbin:/sbin',
@@ -139,8 +170,9 @@ class PromptLaunchTests(unittest.TestCase):
         )
 
     def run_script(self, name, *args, cwd=None, **environment):
+        command = [sys.executable, str(self.project / 'launch-runner.py')] if name == 'launch.py' else [str(self.project / name)]
         return subprocess.run(
-            [str(self.project / name), *args], cwd=cwd or self.project,
+            [*command, *args], cwd=cwd or self.project,
             env={**self.env, **environment}, capture_output=True, timeout=15,
         )
 
@@ -164,9 +196,11 @@ class PromptLaunchTests(unittest.TestCase):
         args = submissions[0]['args']
         self.assertIn('--output', args)
         self.assertEqual(args[args.index('--output') + 1], 'json')
-        watchers = [c for c in calls if c['tool'] == 'watch-job.py']
+        watchers = [c for c in calls if c['tool'] == 'watch']
         self.assertEqual(len(watchers), 1)
-        self.assertEqual(watchers[0]['args'], ['local-test-job', '--region', 'us-west-2'])
+        self.assertEqual(watchers[0]['args'], [
+            'local-test-job', '--region', 'us-west-2', '--log-group', '/aws/batch/agent-wow',
+        ])
         self.assertLess(calls.index(submissions[0]), calls.index(watchers[0]))
 
     def prepare_runtime(self):
@@ -193,7 +227,7 @@ class PromptLaunchTests(unittest.TestCase):
         return tasks[0]
 
     def test_launch_preserves_literal_multiline_prompt(self):
-        result = self.run_script('launch.sh', self.prompt)
+        result = self.run_script('launch.py', '--', self.prompt)
         self.assert_succeeded(result)
         self.assert_watched_once()
         payload = self.submission()
@@ -201,15 +235,18 @@ class PromptLaunchTests(unittest.TestCase):
         self.assertEqual(payload['jobDefinition'], 'agent-wow')
 
     def test_launch_without_prompt_uses_job_default_and_latest_revision(self):
-        self.assert_succeeded(self.run_script('launch.sh', AWS_DEFAULT_OUTPUT='text'))
+        self.assert_succeeded(self.run_script('launch.py', AWS_DEFAULT_OUTPUT='text'))
         self.assert_watched_once()
         payload = self.submission()
-        self.assertNotIn('containerOverrides', payload)
+        self.assertNotIn('command', payload['containerOverrides'])
+        self.assertEqual(payload['containerOverrides']['environment'], [
+            {'name': 'CODEX_MODEL_PROVIDER', 'value': 'openai'},
+        ])
         self.assertEqual(payload['jobDefinition'], 'agent-wow')
 
     def test_launch_can_pin_job_definition_without_changing_prompt(self):
         self.assert_succeeded(self.run_script(
-            'launch.sh', self.prompt, WOW_JOB_DEFINITION=NEW_JOB_DEFINITION,
+            'launch.py', '--', self.prompt, WOW_JOB_DEFINITION=NEW_JOB_DEFINITION,
         ))
         payload = self.submission()
         self.assertEqual(payload['jobDefinition'], NEW_JOB_DEFINITION)
@@ -218,28 +255,28 @@ class PromptLaunchTests(unittest.TestCase):
     def test_launch_rejects_invalid_prompts_before_aws(self):
         for args in [('',), (' \n\t\r ',), ('one', 'two')]:
             with self.subTest(args=args):
-                result = self.run_script('launch.sh', *args)
+                result = self.run_script('launch.py', *args)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertTrue(result.stderr)
                 self.assertEqual(self.records('calls.jsonl'), [])
 
     def test_launch_finds_sibling_watcher_from_another_directory(self):
-        self.assert_succeeded(self.run_script('launch.sh', self.prompt, cwd=self.root))
+        self.assert_succeeded(self.run_script('launch.py', '--', self.prompt, cwd=self.root))
         self.assert_watched_once()
         self.assertEqual(self.submission()['containerOverrides']['command'], ['run-wow-agent', self.prompt])
 
     def test_launch_propagates_watcher_failure(self):
-        result = self.run_script('launch.sh', WOW_TEST_WATCH_EXIT='1')
+        result = self.run_script('launch.py', WOW_TEST_WATCH_EXIT='1')
         self.assertEqual(result.returncode, 1)
         self.assert_watched_once()
 
     def test_launch_propagates_watcher_interruption(self):
-        result = self.run_script('launch.sh', WOW_TEST_WATCH_EXIT='130')
+        result = self.run_script('launch.py', WOW_TEST_WATCH_EXIT='130')
         self.assertEqual(result.returncode, 130)
         self.assert_watched_once()
 
     def test_launch_submit_failure_does_not_watch_or_retry(self):
-        result = self.run_script('launch.sh', WOW_TEST_SUBMIT_EXIT='17')
+        result = self.run_script('launch.py', WOW_TEST_SUBMIT_EXIT='17')
         self.assertEqual(result.returncode, 17)
         self.assertIn(b'Local test submission failed.', result.stderr)
         calls = self.records('calls.jsonl')
@@ -247,6 +284,39 @@ class PromptLaunchTests(unittest.TestCase):
         self.assertEqual(calls[0]['tool'], 'aws')
         self.assertEqual(calls[0]['args'][:2], ['batch', 'submit-job'])
         self.assertEqual(self.records('submissions.jsonl'), [])
+
+    def test_launch_forwards_openrouter_provider_and_model(self):
+        self.assert_succeeded(self.run_script(
+            'launch.py', CODEX_MODEL_PROVIDER='openrouter', CODEX_MODEL='openai/gpt-6.1-sol',
+        ))
+        self.assertEqual(self.submission()['containerOverrides']['environment'], [
+            {'name': 'CODEX_MODEL_PROVIDER', 'value': 'openrouter'},
+            {'name': 'CODEX_MODEL', 'value': 'openai/gpt-6.1-sol'},
+        ])
+        self.assert_watched_once()
+
+    def test_watch_reconnects_without_building_or_submitting(self):
+        self.assert_succeeded(self.run_script(
+            'launch.py', '--watch', 'existing-job', CODEX_MODEL_PROVIDER='openrouter',
+        ))
+        self.assertEqual(self.records('submissions.jsonl'), [])
+        self.assertEqual(self.records('calls.jsonl'), [{
+            'tool': 'watch', 'args': ['existing-job', '--region', 'us-west-2',
+                                     '--log-group', '/aws/batch/agent-wow'],
+        }])
+
+    def test_watch_rejects_invalid_arguments(self):
+        for args in [('--watch', 'existing-job', '--rebuild'), ('--watch', 'existing-job', 'prompt'),
+                     ('--watch', ''), ('--watch', ' \t ')]:
+            with self.subTest(args=args):
+                self.assertNotEqual(self.run_script('launch.py', *args).returncode, 0)
+                self.assertEqual(self.records('calls.jsonl'), [])
+
+    def test_rebuild_failure_does_not_submit_a_job(self):
+        result = self.run_script('launch.py', '--rebuild', WOW_TEST_BUILD_EXIT='7')
+        self.assertEqual(result.returncode, 7)
+        self.assertEqual(self.records('submissions.jsonl'), [])
+        self.assertFalse(any(c['tool'] == 'watch' for c in self.records('calls.jsonl')))
 
     def test_runtime_records_and_sends_exact_custom_prompt(self):
         self.prepare_runtime()
@@ -263,6 +333,21 @@ class PromptLaunchTests(unittest.TestCase):
         self.assert_succeeded(self.run_script('run-wow-agent', CODEX_API_KEY='local-test-fake-key'))
         self.assertEqual(self.runtime_task().read_bytes(), self.default_task)
         self.assertEqual((self.root / 'codex-stdin').read_bytes(), self.default_task)
+
+    def test_runtime_openrouter_uses_selected_model_and_only_its_key(self):
+        self.prepare_runtime()
+        result = self.run_script(
+            'run-wow-agent', self.prompt, CODEX_MODEL_PROVIDER='openrouter',
+            CODEX_MODEL='openai/gpt-6.1-sol', OPENROUTER_API_KEY='local-fake-router-key',
+            CODEX_API_KEY='local-fake-openai-key', OPENAI_API_KEY='local-fake-other-key',
+        )
+        self.assert_succeeded(result)
+        calls = self.records('calls.jsonl')
+        self.assertEqual(len(calls), 1, 'OpenRouter must not request browser login')
+        self.assertIn('exec', calls[0]['args'])
+        args = calls[0]['args']
+        self.assertEqual(args[args.index('--model') + 1], 'openai/gpt-6.1-sol')
+        self.assertEqual(json.loads((self.root / 'codex-key-names.json').read_text()), ['OPENROUTER_API_KEY'])
 
     def test_runtime_rejects_invalid_prompts_before_authentication(self):
         self.prepare_runtime()
@@ -286,47 +371,47 @@ class PromptLaunchTests(unittest.TestCase):
         self.assertTrue((task.parent / 'agent.log').exists())
 
     def test_rebuild_forwards_prompt_to_new_job_definition(self):
-        result = self.run_script('rebuild-and-launch.sh', self.prompt)
+        result = self.run_script('launch.py', '--rebuild', '--', self.prompt)
         self.assert_succeeded(result)
         payload = self.submission()
         self.assertEqual(payload['jobDefinition'], NEW_JOB_DEFINITION)
         self.assertEqual(payload['containerOverrides']['command'], ['run-wow-agent', self.prompt])
         calls = self.records('calls.jsonl')
         self.assertTrue(any(c['tool'] == 'docker' and c['args'][:2] == ['buildx', 'build'] for c in calls))
-        self.assertTrue(any(c['tool'] == 'tofu' and c['args'] == ['apply'] for c in calls))
+        self.assertTrue(any(c['tool'] == 'tofu' and c['args'] == ['apply', '-auto-approve', '-input=false'] for c in calls))
         self.assert_watched_once()
 
     def test_rebuild_without_prompt_keeps_job_default(self):
-        self.assert_succeeded(self.run_script('rebuild-and-launch.sh'))
+        self.assert_succeeded(self.run_script('launch.py', '--rebuild'))
         self.assert_watched_once()
         payload = self.submission()
         self.assertEqual(payload['jobDefinition'], NEW_JOB_DEFINITION)
-        self.assertNotIn('containerOverrides', payload)
+        self.assertNotIn('command', payload['containerOverrides'])
 
     def test_rebuild_propagates_watcher_failure(self):
-        result = self.run_script('rebuild-and-launch.sh', WOW_TEST_WATCH_EXIT='1')
+        result = self.run_script('launch.py', '--rebuild', WOW_TEST_WATCH_EXIT='1')
         self.assertEqual(result.returncode, 1)
         self.assertEqual(len(self.records('submissions.jsonl')), 1)
         self.assert_watched_once()
 
     def test_rebuild_propagates_watcher_interruption(self):
-        result = self.run_script('rebuild-and-launch.sh', WOW_TEST_WATCH_EXIT='130')
+        result = self.run_script('launch.py', '--rebuild', WOW_TEST_WATCH_EXIT='130')
         self.assertEqual(result.returncode, 130)
         self.assert_watched_once()
 
     def test_rebuild_submit_failure_does_not_watch_or_retry(self):
-        result = self.run_script('rebuild-and-launch.sh', WOW_TEST_SUBMIT_EXIT='17')
+        result = self.run_script('launch.py', '--rebuild', WOW_TEST_SUBMIT_EXIT='17')
         self.assertEqual(result.returncode, 17)
         calls = self.records('calls.jsonl')
         submissions = [c for c in calls if c['tool'] == 'aws' and c['args'][:2] == ['batch', 'submit-job']]
         self.assertEqual(len(submissions), 1)
-        self.assertFalse(any(c['tool'] == 'watch-job.py' for c in calls))
+        self.assertFalse(any(c['tool'] == 'watch' for c in calls))
         self.assertEqual(self.records('submissions.jsonl'), [])
 
     def test_rebuild_rejects_invalid_prompts_before_build_or_aws(self):
         for args in [('',), (' \n\t\r ',), ('one', 'two')]:
             with self.subTest(args=args):
-                result = self.run_script('rebuild-and-launch.sh', *args)
+                result = self.run_script('launch.py', '--rebuild', *args)
                 self.assertNotEqual(result.returncode, 0)
                 self.assertTrue(result.stderr)
                 self.assertEqual(self.records('calls.jsonl'), [])

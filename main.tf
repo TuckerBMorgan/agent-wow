@@ -5,9 +5,9 @@
 #   tofu apply
 # Apply creates infrastructure only. Before submitting a job:
 #   1. Build this Dockerfile for linux/amd64 and push it to image_uri below.
-#   2. In the Secrets Manager console, store the existing CODEX_API_KEY as the
-#      entire plaintext secret value (not JSON and not CODEX_API_KEY=...).
-#      Do this outside OpenTofu so the key never enters its state or plan.
+#   2. For OpenRouter, save OPENROUTER_API_KEY in config/openrouter.env, then run
+#      python3 upload-openrouter-key.py. OpenAI uses the existing Codex secret.
+#      Keys are uploaded outside OpenTofu so they never enter its state or plan.
 #   3. Run the submit_job command printed by tofu output.
 # Use a new image_tag for each new image build; apply then registers that version.
 # Commit and push application changes to your fork before build_and_push: the
@@ -125,6 +125,12 @@ resource "aws_secretsmanager_secret" "codex" {
   recovery_window_in_days = 7
 }
 
+resource "aws_secretsmanager_secret" "openrouter" {
+  name_prefix             = "agent-wow-openrouter-"
+  description             = "Raw OPENROUTER_API_KEY loaded by OpenRouter jobs at startup"
+  recovery_window_in_days = 7
+}
+
 resource "aws_cloudwatch_log_group" "agent" {
   name              = "/aws/batch/agent-wow"
   retention_in_days = 14
@@ -221,11 +227,6 @@ resource "aws_iam_role_policy" "execution" {
         Effect   = "Allow"
         Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "${aws_cloudwatch_log_group.agent.arn}:*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = aws_secretsmanager_secret.codex.arn
       }
     ]
   })
@@ -240,11 +241,18 @@ resource "aws_iam_role_policy" "job" {
   role = aws_iam_role.job.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["s3:PutObject"]
-      Resource = "${aws_s3_bucket.results.arn}/runs/*"
-    }]
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = "${aws_s3_bucket.results.arn}/runs/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = [aws_secretsmanager_secret.codex.arn, aws_secretsmanager_secret.openrouter.arn]
+      }
+    ]
   })
 }
 
@@ -309,6 +317,8 @@ resource "aws_batch_job_queue" "agent" {
   }
 }
 
+# One job definition supports both providers. The supervisor retrieves only
+# the selected key at startup, keeping secret values out of job overrides.
 resource "aws_batch_job_definition" "agent" {
   name                  = "agent-wow"
   type                  = "container"
@@ -331,9 +341,11 @@ resource "aws_batch_job_definition" "agent" {
     ]
     environment = [
       { name = "AWS_DEFAULT_REGION", value = var.aws_region },
-      { name = "AWS_RESULTS_BUCKET", value = aws_s3_bucket.results.id }
+      { name = "AWS_RESULTS_BUCKET", value = aws_s3_bucket.results.id },
+      { name = "CODEX_MODEL_PROVIDER", value = "openai" },
+      { name = "CODEX_SECRET_ARN", value = aws_secretsmanager_secret.codex.arn },
+      { name = "OPENROUTER_SECRET_ARN", value = aws_secretsmanager_secret.openrouter.arn }
     ]
-    secrets = [{ name = "CODEX_API_KEY", valueFrom = aws_secretsmanager_secret.codex.arn }]
     logConfiguration = {
       logDriver = "awslogs"
       options = {
@@ -359,6 +371,10 @@ output "image_uri" {
 output "codex_secret_arn" {
   description = "Store the raw API key here outside OpenTofu before submitting a job."
   value       = aws_secretsmanager_secret.codex.arn
+}
+output "openrouter_secret_arn" {
+  description = "Store the raw OpenRouter API key here outside OpenTofu before submitting an OpenRouter job."
+  value       = aws_secretsmanager_secret.openrouter.arn
 }
 output "job_queue" {
   value = aws_batch_job_queue.agent.name
