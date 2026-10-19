@@ -3,3 +3,13 @@
 /data/
 /tmp/
 /results/
+__pycache__/
+
+# Local OpenTofu state, provider downloads, and private settings.
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+*.tfvars.json
+crash.log

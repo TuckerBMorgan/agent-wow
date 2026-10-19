@@ -92,6 +92,20 @@ RUN git clone --depth 1 https://github.com/agent-wow/go-module-template.git /opt
          https://github.com/azerothcore/azerothcore-wotlk.git /opt/azerothcore-reference \
     && mkdir -p /opt/server /workspace
 
+# Debian's /etc/profile resets PATH for the login shells used by Codex.
+# Keep the same toolchain available to both ordinary and login shells.
+COPY <<'PROFILE' /etc/profile.d/agent-wow-path.sh
+export PATH="/usr/local/go/bin:/opt/venv/bin:/root/go/bin:$PATH"
+PROFILE
+
+# Catch missing toolchain paths during the build, before starting a game run.
+RUN /bin/bash -lc 'set -eu; \
+    test "$(command -v go)" = /usr/local/go/bin/go; \
+    go version; \
+    for tool in gofmt protoc-gen-go protoc-gen-go-grpc; do command -v "$tool"; done; \
+    test "$(command -v python3)" = /opt/venv/bin/python3; \
+    python3 -c "import grpc, grpc_tools, google.protobuf, requests, yaml, docker"'
+
 # These services run inside the nested daemon, so 127.0.0.1 is the same
 # loopback address used by agent-wow and the default AzerothCore realmlist.
 # MySQL is accessible only on the inner Compose network.
@@ -238,6 +252,14 @@ TASK
 COPY --chmod=755 <<'BASH' /usr/local/bin/run-wow-agent
 #!/bin/bash
 set -Eeuo pipefail
+if (( $# > 1 )); then
+    echo 'Usage: run-wow-agent ["prompt"] — quote the prompt as one argument.' >&2
+    exit 2
+fi
+if (( $# == 1 )) && [[ ! "$1" =~ [^[:space:]] ]]; then
+    echo 'Prompt must not be blank.' >&2
+    exit 2
+fi
 umask 077
 mkdir -p /root/.codex /root/.cache /root/.docker /root/go /workspace/logs/agent
 
@@ -265,8 +287,12 @@ else
 fi
 
 run_dir=$(mktemp -d "/workspace/logs/agent/$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")
-cp /opt/orc-quest-task.txt "$run_dir/task.txt"
-echo "Starting the orc quest task. Run log: $run_dir/agent.log"
+if (( $# == 1 )); then
+    printf '%s' "$1" > "$run_dir/task.txt"
+else
+    cp /opt/orc-quest-task.txt "$run_dir/task.txt"
+fi
+echo "Starting the game task. Run log: $run_dir/agent.log"
 
 # Keep the workspace sandbox, allowing the local Docker socket and build caches.
 # Network access is required for the game connection and module dependencies.
@@ -295,10 +321,174 @@ fi
 exit "$status"
 BASH
 
+RUN /opt/venv/bin/pip install --no-cache-dir boto3
+
+# AWS Batch workers are disposable. Export only reports and quest evidence;
+# credentials, databases, and Codex login/session directories stay local.
+COPY --chmod=755 <<'PYTHON' /usr/local/bin/run-batch-job
+#!/opt/venv/bin/python3
+import json
+import os
+from pathlib import Path
+import signal
+import stat
+import subprocess
+import sys
+import time
+
+import boto3
+from botocore.config import Config
+
+
+class Results:
+    def __init__(self, client, bucket, job_id, workspace=Path('/workspace')):
+        self.client = client
+        self.bucket = bucket
+        self.prefix = f'runs/{job_id}'
+        self.workspace = workspace
+        self.secret = os.environ.get('CODEX_API_KEY', '').encode()
+        self.uploaded = {}
+
+    def put(self, key, data):
+        if self.secret:
+            data = data.replace(self.secret, b'[REDACTED]')
+        self.client.put_object(Bucket=self.bucket, Key=f'{self.prefix}/{key}', Body=data)
+
+    def status(self, state, exit_code=None):
+        self.put('status.json', json.dumps({
+            'state': state,
+            'process_exit_code': exit_code,
+            'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+            'quest_completion': 'Verify server-confirmed turn-ins in journal; exit 0 alone is not proof.',
+        }).encode())
+
+    def snapshot(self, deadline=lambda: float('inf')):
+        ok = True
+        for relative in ('journal', 'logs/agent'):
+            root = self.workspace / relative
+            if root.resolve() != self.workspace.resolve() / relative or not root.is_dir():
+                continue
+            for directory, dirs, files in os.walk(root, followlinks=False):
+                dirs[:] = [name for name in dirs if not (Path(directory) / name).is_symlink()]
+                for name in files:
+                    if time.monotonic() >= deadline():
+                        return False
+                    path = Path(directory) / name
+                    try:
+                        # Never follow a report symlink into credentials or read a FIFO/device.
+                        path.resolve().relative_to(root.resolve())
+                        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                        with os.fdopen(fd, 'rb') as stream:
+                            info = os.fstat(stream.fileno())
+                            if not stat.S_ISREG(info.st_mode):
+                                continue
+                            key = path.relative_to(self.workspace).as_posix()
+                            signature = (info.st_size, info.st_mtime_ns)
+                            if self.uploaded.get(key) == signature:
+                                continue
+                            data = stream.read()
+                        self.put(key, data)
+                        self.uploaded[key] = signature
+                    except (FileNotFoundError, ValueError):
+                        continue
+                    except OSError as error:
+                        if path.is_symlink():
+                            continue
+                        print(f'Result export failed ({type(error).__name__}).', flush=True)
+                        ok = False
+                    except Exception as error:
+                        # SDK exception messages can contain request data; log only the type.
+                        print(f'Result export failed ({type(error).__name__}).', flush=True)
+                        ok = False
+        return ok
+
+
+def run(results, command):
+    child = None
+    interrupted = 0
+    forwarded = False
+    stop_by = float('inf')
+
+    def forward_stop():
+        nonlocal forwarded
+        if interrupted and child is not None and not forwarded:
+            forwarded = True
+            try:
+                child.send_signal(interrupted)
+            except ProcessLookupError:
+                pass
+
+    def stop(signum, _frame):
+        nonlocal interrupted, stop_by
+        if not interrupted:
+            interrupted = signum
+            # Batch allows about 30 seconds before SIGKILL. Export during cleanup.
+            stop_by = time.monotonic() + 20
+            forward_stop()
+
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
+    # Fail before starting an expensive game if the result destination is inaccessible.
+    results.status('starting')
+    if interrupted:
+        return 128 + interrupted
+    environment = dict(os.environ, AGENT_WOW_BATCH_SUPERVISED='1')
+    child = subprocess.Popen(command, env=environment)
+    forward_stop()  # Also handle a signal received while Popen was starting.
+    next_export = 0
+    while True:
+        exit_code = child.poll()
+        if interrupted or exit_code is not None or time.monotonic() >= next_export:
+            exported = results.snapshot(deadline=lambda: stop_by)
+            status = 'interrupted' if interrupted else ('exited' if exit_code is not None else 'running')
+            try:
+                results.status(status, 128 + interrupted if interrupted else exit_code)
+            except Exception as error:
+                print(f'Result status export failed ({type(error).__name__}).', flush=True)
+                exported = False
+            if interrupted:
+                try:
+                    child.wait(timeout=max(0, stop_by - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    pass
+                return 128 + interrupted
+            if exit_code is not None:
+                # Preserve agent failure; successful execution still requires a final export.
+                return (128 - exit_code if exit_code < 0 else exit_code) or (0 if exported else 74)
+            next_export = time.monotonic() + 60
+        time.sleep(0.5)
+
+
+def main():
+    bucket = os.environ.get('AWS_RESULTS_BUCKET')
+    job_id = os.environ.get('AWS_BATCH_JOB_ID')
+    if not bucket or not job_id or not os.environ.get('CODEX_API_KEY'):
+        print('Batch requires AWS_RESULTS_BUCKET, AWS_BATCH_JOB_ID, and a nonempty CODEX_API_KEY.', flush=True)
+        return 1
+    client = boto3.client('s3', config=Config(
+        connect_timeout=3, read_timeout=5, retries={'total_max_attempts': 1},
+    ))
+    results = Results(client, bucket, job_id)
+    print(f'Results: s3://{bucket}/runs/{job_id}/', flush=True)
+    return run(results, ['/usr/local/bin/start-agent-workspace', *sys.argv[1:]])
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except Exception as error:
+        print(f'Batch supervisor failed ({type(error).__name__}); see CloudWatch logs.', flush=True)
+        sys.exit(1)
+PYTHON
+
 COPY --chmod=755 <<'BASH' /usr/local/bin/start-agent-workspace
 #!/bin/bash
 set -Eeuo pipefail
 umask 077
+
+if [[ -n "${AWS_BATCH_JOB_ID:-}" && "${AGENT_WOW_BATCH_SUPERVISED:-}" != 1 ]]; then
+    exec /usr/local/bin/run-batch-job "$@"
+fi
 
 # Bootstrap a named workspace volume only when it is empty.
 mkdir -p /workspace/{config,data,modules,scripts,journal,logs,server,tmp}
@@ -408,9 +598,9 @@ Workspace ready in /workspace.
   server source:         /workspace/azerothcore-reference
   logs and records:      /workspace/logs and /workspace/journal
 
-The default command starts the orc quest task using CODEX_API_KEY when supplied.
+The default command starts the game task using CODEX_API_KEY when supplied.
+Pass a quoted prompt to run-wow-agent to override the image's default task.
 Without an API key, it uses a saved ChatGPT login or requests device login.
-Later runs instruct the agent to continue its saved character.
 Agent logs and final reports are stored in /workspace/logs/agent.
 MESSAGE
 
