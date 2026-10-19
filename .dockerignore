@@ -1,4 +1,8 @@
-# Sources are fetched during the build; no host files are needed.
+# Only the Dockerfile and container runtime helpers enter the build context.
 **
 !Dockerfile
 !.dockerignore
+!docker/
+!docker/prepare_wow_account.py
+!docker/run_batch_job.py
+!docker/codex_openrouter_cache.py

@@ -92,6 +92,10 @@ elif tool == 'codex':
         raise SystemExit(int(os.environ.get('WOW_TEST_CODEX_EXIT', '0')))
     elif 'login' not in args:
         raise SystemExit('Unexpected Codex call in test: ' + repr(args))
+elif tool == 'codex-openrouter-cache':
+    if args[0] != '--usage-file':
+        raise SystemExit('Missing cache usage file')
+    os.execvp(args[2], args[2:])
 else:
     raise SystemExit('Unknown test command: ' + tool)
 '''
@@ -145,7 +149,7 @@ class PromptLaunchTests(unittest.TestCase):
         self.root = Path(directory.name)
         self.bin = self.root / 'bin'
         self.bin.mkdir()
-        for tool in ('aws', 'docker', 'tofu', 'git', 'codex'):
+        for tool in ('aws', 'docker', 'tofu', 'git', 'codex', 'codex-openrouter-cache'):
             executable = self.bin / tool
             executable.write_text('#!' + sys.executable + '\n' + STUB)
             executable.chmod(0o755)
@@ -205,6 +209,7 @@ class PromptLaunchTests(unittest.TestCase):
 
     def prepare_runtime(self):
         script = dockerfile_heredoc('/usr/local/bin/run-wow-agent', 'BASH')
+        script = script.replace('/usr/local/bin/codex-openrouter-cache', str(self.bin / 'codex-openrouter-cache'))
         # The shipped script uses container-only absolute paths. Redirect each
         # root to this fixture so tests cannot touch a real /workspace or /root.
         roots = ('workspace', 'root', 'opt', 'run')
@@ -348,6 +353,20 @@ class PromptLaunchTests(unittest.TestCase):
         args = calls[0]['args']
         self.assertEqual(args[args.index('--model') + 1], 'openai/gpt-6.1-sol')
         self.assertEqual(json.loads((self.root / 'codex-key-names.json').read_text()), ['OPENROUTER_API_KEY'])
+
+    def test_runtime_anthropic_uses_cache_adapter_and_records_usage_beside_agent_log(self):
+        self.prepare_runtime()
+        result = self.run_script(
+            'run-wow-agent', self.prompt, CODEX_MODEL_PROVIDER='openrouter',
+            CODEX_MODEL='anthropic/claude-sonnet-5', OPENROUTER_API_KEY='local-fake-router-key',
+        )
+        self.assert_succeeded(result)
+        calls = self.records('calls.jsonl')
+        self.assertEqual([call['tool'] for call in calls], ['codex-openrouter-cache', 'codex'])
+        self.assertEqual(calls[0]['args'][:2], [
+            '--usage-file', str(self.runtime_task().parent / 'cache-usage.jsonl'),
+        ])
+        self.assertEqual((self.root / 'codex-stdin').read_bytes(), self.prompt.encode())
 
     def test_runtime_rejects_invalid_prompts_before_authentication(self):
         self.prepare_runtime()

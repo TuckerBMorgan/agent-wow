@@ -1,4 +1,4 @@
-"""Credential-free regression tests for the Batch wrapper embedded in Dockerfile.
+"""Credential-free regression tests for the container Batch supervisor.
 
 Run with: python3 -m unittest discover -s tests -p 'test_batch_job.py'
 No Docker daemon, AWS account, OpenAI API, or game server is used.
@@ -9,7 +9,6 @@ import io
 import json
 import os
 from pathlib import Path
-import re
 import signal
 import subprocess
 import sys
@@ -20,14 +19,7 @@ from unittest import mock
 
 
 def load_wrapper():
-    dockerfile = (Path(__file__).resolve().parents[1] / 'Dockerfile').read_text()
-    match = re.search(
-        r"^COPY --chmod=755 <<'PYTHON' /usr/local/bin/run-batch-job\n(.*?)^PYTHON$",
-        dockerfile,
-        re.MULTILINE | re.DOTALL,
-    )
-    if match is None:
-        raise AssertionError('Batch wrapper heredoc was not found in Dockerfile')
+    path = Path(__file__).resolve().parents[1] / 'docker/run_batch_job.py'
     boto3 = types.ModuleType('boto3')
     boto3.client = mock.Mock(side_effect=AssertionError('Real AWS calls are forbidden in tests'))
     botocore = types.ModuleType('botocore')
@@ -37,7 +29,7 @@ def load_wrapper():
     with mock.patch.dict(sys.modules, {
         'boto3': boto3, 'botocore': botocore, 'botocore.config': config,
     }):
-        exec(compile(match.group(1), 'Dockerfile:run-batch-job', 'exec'), module.__dict__)
+        exec(compile(path.read_text(), str(path), 'exec'), module.__dict__)
     return module
 
 
