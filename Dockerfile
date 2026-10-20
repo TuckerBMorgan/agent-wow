@@ -226,6 +226,7 @@ mkdir -p /root/.codex /root/.cache /root/.docker /root/go /workspace/logs/agent
 
 provider=${CODEX_MODEL_PROVIDER:-openai}
 model=${CODEX_MODEL:-}
+effort=${CODEX_REASONING_EFFORT:-}
 case "$provider" in
     openai) unset OPENROUTER_API_KEY ;;
     openrouter) unset CODEX_API_KEY OPENAI_API_KEY ;;
@@ -234,6 +235,18 @@ esac
 if [[ ${CODEX_MODEL+x} && ( ! "$model" =~ ^[A-Za-z0-9_./:~+-]+$ || "$model" == -* ) ]]; then
     echo 'CODEX_MODEL must be a nonempty model ID without whitespace or shell options.' >&2
     exit 2
+fi
+if [[ ${CODEX_REASONING_EFFORT+x} ]]; then
+    case "$effort" in
+        none|minimal|low|medium|high|xhigh|max|ultra) ;;
+        *) echo 'CODEX_REASONING_EFFORT must be none, minimal, low, medium, high, xhigh, max, or ultra.' >&2; exit 2 ;;
+    esac
+    if [[ "$model" == gpt-6.1-sol || "$model" == openai/gpt-6.1-sol ]]; then
+        case "$effort" in
+            low|medium|high|xhigh|max) ;;
+            *) echo 'Sol 6.1 supports only low, medium, high, xhigh, or max reasoning effort.' >&2; exit 2 ;;
+        esac
+    fi
 fi
 
 # CLI overrides preserve existing user configuration. Command-backed auth
@@ -272,6 +285,7 @@ else
     fi
 fi
 if [[ -n "$model" ]]; then codex_cli+=(--model "$model"); fi
+if [[ -n "$effort" ]]; then codex_cli+=(--config "model_reasoning_effort=\"$effort\""); fi
 
 run_dir=$(mktemp -d "/workspace/logs/agent/$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")
 if (( $# == 1 )); then
@@ -281,11 +295,12 @@ else
 fi
 echo "Starting the game task. Run log: $run_dir/agent.log"
 echo "Codex provider: $provider; model: ${model:-Codex default}"
+echo "Reasoning effort override: ${effort:-unset (Codex/provider default)}"
 
 # Anthropic requires an explicit cache directive; OpenAI caches automatically.
 # Keep this adapter out of other providers' request paths.
 if [[ "$provider" == openrouter && "$model" == anthropic/* ]]; then
-    codex_cli=(/usr/local/bin/codex-openrouter-cache --usage-file "$run_dir/cache-usage.jsonl" "${codex_cli[@]}")
+    codex_cli=(/usr/local/bin/codex-openrouter-cache "${codex_cli[@]}")
 fi
 
 # Keep the workspace sandbox, allowing the local Docker socket and build caches.

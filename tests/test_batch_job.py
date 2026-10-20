@@ -73,6 +73,13 @@ class BatchJobTests(unittest.TestCase):
         return [json.loads(call['Body']) for call in self.client.calls
                 if call['Key'] == 'runs/test-job/status.json']
 
+    def test_status_records_requested_effort_and_distinguishes_unset(self):
+        self.results.status('running')
+        self.assertIsNone(self.statuses()[-1]['reasoning_effort_override'])
+        with mock.patch.dict(os.environ, {'CODEX_REASONING_EFFORT': 'high'}):
+            self.results.status('running')
+        self.assertEqual(self.statuses()[-1]['reasoning_effort_override'], 'high')
+
     def test_exports_only_reports_and_journal_and_redacts_exact_api_key(self):
         self.write('journal/quest.json', b'{"turn_in_confirmed": true}')
         self.write('logs/agent/run/final-report.txt', b'finished')

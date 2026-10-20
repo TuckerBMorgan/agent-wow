@@ -35,6 +35,7 @@ class Results:
             'process_exit_code': exit_code,
             'provider': os.environ.get('CODEX_MODEL_PROVIDER', 'openai'),
             'model_override': os.environ.get('CODEX_MODEL'),
+            'reasoning_effort_override': os.environ.get('CODEX_REASONING_EFFORT'),
             'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
             'quest_completion': 'Verify server-confirmed turn-ins in journal; exit 0 alone is not proof.',
         }).encode())

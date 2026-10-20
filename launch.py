@@ -4,6 +4,7 @@
 Usage: python3 launch.py [--rebuild] ["prompt"]
        python3 launch.py --watch JOB_ID
 CODEX_MODEL_PROVIDER and CODEX_MODEL select the provider and model at launch.
+CODEX_REASONING_EFFORT optionally sets the model's reasoning effort.
 """
 
 import argparse
@@ -141,13 +142,21 @@ def follow(job_id, region, log_group, poll_seconds=5, final_wait_seconds=15):
 def container_overrides(prompt):
     provider = os.environ.get('CODEX_MODEL_PROVIDER', 'openai')
     model = os.environ.get('CODEX_MODEL', '')
+    effort = os.environ.get('CODEX_REASONING_EFFORT')
     if provider not in ('openai', 'openrouter'):
         raise ValueError('CODEX_MODEL_PROVIDER must be openai or openrouter.')
     if ('CODEX_MODEL' in os.environ or provider == 'openrouter') and not model.strip():
         raise ValueError('Set CODEX_MODEL to a nonempty model ID.')
+    if effort is not None:
+        if effort not in ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'):
+            raise ValueError('CODEX_REASONING_EFFORT must be none, minimal, low, medium, high, xhigh, max, or ultra.')
+        if model in ('gpt-6.1-sol', 'openai/gpt-6.1-sol') and effort not in ('low', 'medium', 'high', 'xhigh', 'max'):
+            raise ValueError('Sol 6.1 supports only low, medium, high, xhigh, or max reasoning effort.')
     overrides = {'environment': [{'name': 'CODEX_MODEL_PROVIDER', 'value': provider}]}
     if model:
         overrides['environment'].append({'name': 'CODEX_MODEL', 'value': model})
+    if effort is not None:
+        overrides['environment'].append({'name': 'CODEX_REASONING_EFFORT', 'value': effort})
     if prompt is not None:
         if not prompt.strip():
             raise ValueError('Prompt must not be blank.')
@@ -157,9 +166,10 @@ def container_overrides(prompt):
 
 def rebuild(region):
     root = Path(__file__).resolve().parent
-    tofu = os.environ.get('WOW_TOFU') or shutil.which('tofu') or '/private/tmp/agent-wow-tofu-omqtgfn4/tofu'
-    if not shutil.which(tofu):
-        raise ValueError('OpenTofu not found. Install tofu or set WOW_TOFU to its executable path.')
+    tofu = shutil.which(os.environ.get('WOW_TOFU') or 'tofu')
+    if not tofu:
+        raise ValueError('OpenTofu not found. On macOS, run brew install opentofu; '
+                         'otherwise install tofu or set WOW_TOFU to its executable path.')
     repository = subprocess.check_output([tofu, 'output', '-raw', 'ecr_repository_url'], cwd=root, text=True).strip()
     password = subprocess.check_output(['aws', 'ecr', 'get-login-password', '--region', region], text=True)
     subprocess.run(['docker', 'login', '--username', 'AWS', '--password-stdin', repository.split('/')[0]],

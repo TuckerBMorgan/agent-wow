@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 
 
@@ -93,9 +94,7 @@ elif tool == 'codex':
     elif 'login' not in args:
         raise SystemExit('Unexpected Codex call in test: ' + repr(args))
 elif tool == 'codex-openrouter-cache':
-    if args[0] != '--usage-file':
-        raise SystemExit('Missing cache usage file')
-    os.execvp(args[2], args[2:])
+    os.execvp(args[0], args)
 else:
     raise SystemExit('Unknown test command: ' + tool)
 '''
@@ -300,6 +299,28 @@ class PromptLaunchTests(unittest.TestCase):
         ])
         self.assert_watched_once()
 
+    def test_launch_and_rebuild_forward_reasoning_effort(self):
+        for args in [(), ('--rebuild',)]:
+            with self.subTest(args=args):
+                (self.root / 'submissions.jsonl').unlink(missing_ok=True)
+                self.assert_succeeded(self.run_script(
+                    'launch.py', *args, CODEX_MODEL_PROVIDER='openrouter',
+                    CODEX_MODEL='openai/gpt-6.1-sol', CODEX_REASONING_EFFORT='high',
+                ))
+                self.assertIn({'name': 'CODEX_REASONING_EFFORT', 'value': 'high'},
+                              self.submission()['containerOverrides']['environment'])
+
+    def test_launch_rejects_invalid_effort_before_building_or_submitting(self):
+        for model, effort in [('gpt-6.1-sol', 'none'), ('openai/gpt-6.1-sol', 'minimal'),
+                              ('openai/gpt-6.1-sol', 'ultra'), ('test-model', ''),
+                              ('test-model', 'hihg'), ('test-model', 'high"; touch nope')]:
+            with self.subTest(model=model, effort=effort):
+                result = self.run_script('launch.py', '--rebuild', CODEX_MODEL=model,
+                                         CODEX_REASONING_EFFORT=effort)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(b'effort', result.stderr.lower())
+                self.assertEqual(self.records('calls.jsonl'), [])
+
     def test_watch_reconnects_without_building_or_submitting(self):
         self.assert_succeeded(self.run_script(
             'launch.py', '--watch', 'existing-job', CODEX_MODEL_PROVIDER='openrouter',
@@ -332,6 +353,8 @@ class PromptLaunchTests(unittest.TestCase):
         calls = self.records('calls.jsonl')
         self.assertEqual(len(calls), 1)
         self.assertIn('exec', calls[0]['args'])
+        self.assertFalse(any(arg.startswith('model_reasoning_effort=') for arg in calls[0]['args']))
+        self.assertIn(b'Reasoning effort override: unset (Codex/provider default)', result.stdout)
 
     def test_runtime_without_argument_uses_baked_task(self):
         self.prepare_runtime()
@@ -354,7 +377,7 @@ class PromptLaunchTests(unittest.TestCase):
         self.assertEqual(args[args.index('--model') + 1], 'openai/gpt-6.1-sol')
         self.assertEqual(json.loads((self.root / 'codex-key-names.json').read_text()), ['OPENROUTER_API_KEY'])
 
-    def test_runtime_anthropic_uses_cache_adapter_and_records_usage_beside_agent_log(self):
+    def test_runtime_anthropic_uses_cache_adapter(self):
         self.prepare_runtime()
         result = self.run_script(
             'run-wow-agent', self.prompt, CODEX_MODEL_PROVIDER='openrouter',
@@ -363,10 +386,68 @@ class PromptLaunchTests(unittest.TestCase):
         self.assert_succeeded(result)
         calls = self.records('calls.jsonl')
         self.assertEqual([call['tool'] for call in calls], ['codex-openrouter-cache', 'codex'])
-        self.assertEqual(calls[0]['args'][:2], [
-            '--usage-file', str(self.runtime_task().parent / 'cache-usage.jsonl'),
-        ])
+        self.assertEqual(calls[0]['args'], ['codex', *calls[1]['args']])
         self.assertEqual((self.root / 'codex-stdin').read_bytes(), self.prompt.encode())
+
+    def test_runtime_passes_explicit_effort_to_codex_including_through_cache_adapter(self):
+        self.prepare_runtime()
+        for model, effort in [('openai/gpt-6.1-sol', 'high'), ('openai/gpt-6-sol', 'none'),
+                              ('anthropic/claude-sonnet-5', 'medium')]:
+            with self.subTest(model=model, effort=effort):
+                self.assert_succeeded(result := self.run_script(
+                    'run-wow-agent', self.prompt, CODEX_MODEL_PROVIDER='openrouter',
+                    CODEX_MODEL=model, CODEX_REASONING_EFFORT=effort,
+                    OPENROUTER_API_KEY='local-fake-router-key',
+                ))
+                args = self.records('calls.jsonl')[-1]['args']
+                setting = f'model_reasoning_effort="{effort}"'
+                self.assertIn(setting, args)
+                self.assertEqual(args[args.index(setting) - 1], '--config')
+                self.assertLess(args.index(setting), args.index('exec'))
+                self.assertIn(f'Reasoning effort override: {effort}'.encode(), result.stdout)
+
+    def test_runtime_rejects_invalid_effort_before_authentication(self):
+        self.prepare_runtime()
+        for model, effort in [('gpt-6.1-sol', 'none'), ('openai/gpt-6.1-sol', 'minimal'),
+                              ('openai/gpt-6.1-sol', 'ultra'), ('test-model', ''),
+                              ('test-model', 'hihg'), ('test-model', 'high"; touch nope')]:
+            with self.subTest(model=model, effort=effort):
+                result = self.run_script('run-wow-agent', CODEX_MODEL=model,
+                                         CODEX_REASONING_EFFORT=effort)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(b'effort', result.stderr.lower())
+                self.assertEqual(self.records('calls.jsonl'), [])
+
+    @unittest.skipUnless(os.environ.get('WOW_TEST_CODEX_BINARY'), 'Optional local Codex binary capture')
+    def test_runtime_sol_effort_reaches_real_codex_request_without_api_credentials(self):
+        from http.server import ThreadingHTTPServer
+        from test_openrouter_cache import FakeRouter
+
+        router = ThreadingHTTPServer(('127.0.0.1', 0), FakeRouter)
+        router.requests = []
+        router.cached = 5000
+        threading.Thread(target=router.serve_forever, daemon=True).start()
+        self.addCleanup(router.server_close)
+        self.addCleanup(router.shutdown)
+        self.prepare_runtime()
+        script = self.project / 'run-wow-agent'
+        # Both auth and inference stay on loopback with an isolated Codex home.
+        script.write_text(script.read_text().replace('https://openrouter.ai/api/v1',
+                          f'http://127.0.0.1:{router.server_port}/api/v1'))
+        (self.bin / 'codex').unlink()
+        (self.bin / 'codex').symlink_to(os.environ['WOW_TEST_CODEX_BINARY'])
+        codex_home = self.root / 'offline-codex-home'
+        codex_home.mkdir()
+        for effort in ('low', 'medium', 'high', 'xhigh', 'max'):
+            with self.subTest(effort=effort):
+                self.assert_succeeded(self.run_script(
+                    'run-wow-agent', 'Reply briefly; do not use tools.',
+                    CODEX_MODEL_PROVIDER='openrouter', CODEX_MODEL='openai/gpt-6.1-sol',
+                    CODEX_REASONING_EFFORT=effort, CODEX_HOME=str(codex_home),
+                    OPENROUTER_API_KEY='offline-fake-key',
+                ))
+                self.assertEqual(router.requests[-1]['body']['reasoning']['effort'], effort)
+        self.assertEqual(len(router.requests), 5)
 
     def test_runtime_rejects_invalid_prompts_before_authentication(self):
         self.prepare_runtime()

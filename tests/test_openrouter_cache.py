@@ -1,9 +1,7 @@
 """Offline HTTP tests: fake credentials and a loopback-only OpenRouter server."""
 
-import contextlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
-import io
 import json
 import os
 from pathlib import Path
@@ -12,7 +10,6 @@ import sys
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
 
@@ -48,11 +45,22 @@ class FakeRouter(BaseHTTPRequestHandler):
         self.wfile.write(b'{"models":[],"data":[]}')
 
     def do_POST(self):
-        body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-        self.server.requests.append({'body': body, 'headers': dict(self.headers), 'path': self.path})
+        raw = self.rfile.read(int(self.headers['Content-Length']))
+        body = json.loads(raw)
+        self.server.requests.append({'body': body, 'raw': raw, 'headers': dict(self.headers), 'path': self.path})
+        status = getattr(self.server, 'status', 200)
+        if getattr(self.server, 'errors_left', 0):
+            self.server.errors_left -= 1
+            status = 429
+        self.send_response(status)
+        if status != 200:
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Retry-After', '1')
+            self.send_header('X-RateLimit-Remaining', '0')
+            self.end_headers()
+            self.wfile.write(b'{"error":{"message":"Local mock rate limit"}}')
+            return
         final = completed(self.server.cached)
-        final['type'] = getattr(self.server, 'event_type', 'response.completed')
-        self.send_response(200)
         if getattr(self.server, 'json_response', False):
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
@@ -69,7 +77,11 @@ class FakeRouter(BaseHTTPRequestHandler):
             {'type': 'response.output_item.done', 'output_index': 0, 'item': final['response']['output'][0]},
             final,
         ]
-        self.wfile.write(b''.join(b'data: ' + json.dumps(event).encode() + b'\n\n' for event in events))
+        for index, event in enumerate(events):
+            self.wfile.write(b'data: ' + json.dumps(event).encode() + b'\n\n')
+            self.wfile.flush()
+            if index == 0 and hasattr(self.server, 'stream_pause'):
+                self.server.stream_pause.wait(5)
 
 
 class CacheTests(unittest.TestCase):
@@ -77,12 +89,11 @@ class CacheTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory(prefix='wow-cache-test-')
         self.addCleanup(self.directory.cleanup)
         self.root = Path(self.directory.name)
-        self.usage_file = self.root / 'cache-usage.jsonl'
         self.router = ThreadingHTTPServer(('127.0.0.1', 0), FakeRouter)
         self.router.requests = []
         self.router.cached = 5000
         self.add_server(self.router)
-        self.proxy = adapter.CacheProxy(self.usage_file, self.url(self.router))
+        self.proxy = adapter.CacheProxy(self.url(self.router))
         self.add_server(self.proxy)
 
     @staticmethod
@@ -90,164 +101,115 @@ class CacheTests(unittest.TestCase):
         return f'http://127.0.0.1:{server.server_port}'
 
     def add_server(self, server):
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
-        thread.start()
+        threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
 
-    def post(self, model='anthropic/claude-sonnet-5'):
-        request = Request(self.url(self.proxy) + '/api/v1/responses', data=json.dumps({
+    def request(self, model='anthropic/claude-opus-5.5'):
+        return Request(self.url(self.proxy) + '/api/v1/responses', data=json.dumps({
             'model': model, 'input': 'Local test prompt', 'stream': True,
-            'prompt_cache_key': 'local-test-session',
-        }).encode(), headers={'Content-Type': 'application/json', 'Authorization': 'Bearer fake-key'})
-        with contextlib.redirect_stdout(io.StringIO()), urlopen(request, timeout=5) as response:
-            return response.read()
+            'prompt_cache_key': 'local-test-session', 'reasoning': {'effort': 'high'},
+        }, indent=2).encode(), headers={'Content-Type': 'application/json', 'Authorization': 'Bearer fake-key'})
 
-    def test_anthropic_directive_auth_and_stream_are_forwarded(self):
-        data = self.post()
+    def test_directive_is_added_without_changing_prompt_auth_model_or_effort(self):
+        request = self.request()
+        with urlopen(request, timeout=5) as response:
+            data = response.read()
         captured = self.router.requests[0]
-        self.assertEqual(captured['body']['cache_control'], {'type': 'ephemeral'})
-        self.assertEqual(captured['body']['prompt_cache_key'], 'local-test-session')
+        self.assertEqual(captured['body'], {**json.loads(request.data), 'cache_control': {'type': 'ephemeral'}})
         self.assertEqual(captured['headers']['Authorization'], 'Bearer fake-key')
         self.assertEqual(captured['path'], '/api/v1/responses')
         self.assertIn(b'"type": "response.completed"', data)
-        usage = json.loads(self.usage_file.read_text())
-        self.assertEqual(usage['cached_tokens'], 5000)
-        self.assertNotIn('fake-key', self.usage_file.read_text())
-        self.assertNotIn('Local test prompt', self.usage_file.read_text())
 
-    def test_openai_request_is_unchanged(self):
-        self.post('openai/gpt-6.1-sol')
-        self.assertNotIn('cache_control', self.router.requests[0]['body'])
-        self.assertFalse(self.usage_file.exists())
+    def test_other_models_request_bytes_are_unchanged(self):
+        request = self.request('openai/gpt-6.1-sol')
+        with urlopen(request, timeout=5) as response:
+            response.read()
+        self.assertEqual(self.router.requests[0]['raw'], request.data)
 
-    def test_json_response_usage_is_recorded(self):
+    def test_model_discovery_is_forwarded(self):
+        with urlopen(self.url(self.proxy) + '/api/v1/models?client_version=test', timeout=5) as response:
+            self.assertEqual(json.load(response), {'models': [], 'data': []})
+
+    def test_json_response_and_usage_are_relayed_without_parsing(self):
         self.router.json_response = True
-        response = json.loads(self.post())
-        self.assertEqual(response['usage']['input_tokens'], 6000)
-        self.assertEqual(json.loads(self.usage_file.read_text())['cached_tokens'], 5000)
+        with urlopen(self.request(), timeout=5) as response:
+            self.assertEqual(response.read(), json.dumps(completed(5000)['response']).encode())
 
-    def test_output_limit_does_not_bypass_the_cache_guard(self):
-        self.router.event_type = 'response.incomplete'
+    def test_rate_limit_status_headers_and_body_survive(self):
+        self.router.status = 429
+        with self.assertRaises(HTTPError) as caught:
+            urlopen(self.request(), timeout=5)
+        with caught.exception as response:
+            self.assertEqual(response.code, 429)
+            self.assertEqual(response.headers['Retry-After'], '1')
+            self.assertEqual(response.headers['X-RateLimit-Remaining'], '0')
+            self.assertEqual(response.read(), b'{"error":{"message":"Local mock rate limit"}}')
+        self.assertEqual(len(self.router.requests), 1, 'The proxy must not retry requests itself')
+
+    def test_cache_misses_do_not_stop_the_agent(self):
         self.router.cached = 0
-        for _ in range(3):
-            self.post()
-        self.assertTrue(self.proxy.failed.is_set())
+        for _ in range(4):
+            with urlopen(self.request(), timeout=5) as response:
+                self.assertIn(b'"type": "response.completed"', response.read())
+        self.assertEqual(len(self.router.requests), 4)
 
-    def test_three_large_misses_block_further_upstream_requests(self):
-        self.router.cached = 0
-        for _ in range(3):
-            self.post()
-        self.assertTrue(self.proxy.failed.is_set())
-        with self.assertRaises(HTTPError) as error:
-            self.post()
-        self.assertEqual(error.exception.code, 400)
-        self.assertEqual(len(self.router.requests), 3)
+    def test_stream_is_forwarded_before_upstream_finishes(self):
+        self.router.stream_pause = threading.Event()
+        try:
+            with urlopen(self.request(), timeout=2) as response:
+                self.assertIn(b'response.created', response.readline())
+                self.assertFalse(self.router.stream_pause.is_set())
+                self.router.stream_pause.set()
+                response.read()
+        finally:
+            self.router.stream_pause.set()
 
-    def test_a_cache_hit_resets_consecutive_misses(self):
-        self.router.cached = 0
-        self.post()
-        self.post()
-        self.router.cached = 5000
-        self.post()
-        self.router.cached = 0
-        self.post()
-        self.post()
-        self.assertFalse(self.proxy.failed.is_set())
-
-    def test_small_prompts_do_not_trigger_the_large_prompt_guard(self):
-        event = completed()
-        event['response']['usage']['input_tokens'] = 500
-        with contextlib.redirect_stdout(io.StringIO()):
-            for _ in range(4):
-                self.proxy.record_usage(event, 'short-session')
-        self.assertFalse(self.proxy.failed.is_set())
-
-    def test_missing_usage_stops_after_three_unverifiable_responses(self):
-        with contextlib.redirect_stdout(io.StringIO()):
-            for _ in range(3):
-                self.proxy.record_usage({'response': {}}, 'unknown-session')
-        self.assertTrue(self.proxy.failed.is_set())
-
-    def test_malformed_usage_cannot_be_mistaken_for_a_cache_hit(self):
-        event = completed()
-        event['response']['usage']['input_tokens_details']['cached_tokens'] = '0'
-        with contextlib.redirect_stdout(io.StringIO()):
-            for _ in range(3):
-                self.proxy.record_usage(event, 'bad-accounting')
-        self.assertTrue(self.proxy.failed.is_set())
-
-    def test_unwritable_usage_log_stops_spending(self):
-        self.proxy.usage_file = self.root  # A directory cannot be opened as a log.
-        self.proxy.record_usage(completed(5000), 'local-test-session')
-        self.assertTrue(self.proxy.failed.is_set())
-
-    def test_guard_terminates_codex_and_returns_failure(self):
-        class Child:
-            returncode = None
-
-            def poll(self):
-                return self.returncode
-
-            def terminate(self):
-                self.returncode = -15
-
-            def wait(self, timeout):
-                return self.returncode
-
-        self.proxy.failed.set()
-        self.proxy.failure_reason = 'local test'
-        child = Child()
-        with patch.object(adapter, 'CacheProxy', return_value=self.proxy), \
-                patch.object(adapter.threading, 'Thread'), \
-                patch.object(adapter.subprocess, 'Popen', return_value=child) as popen, \
-                patch.object(adapter.signal, 'signal'), \
-                patch.object(sys, 'argv', ['adapter', '--usage-file', str(self.usage_file),
-                                         'codex', '--config', 'model_provider="openrouter"', 'exec', '-']), \
-                contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(adapter.main(), 70)
-        self.assertEqual(child.returncode, -15)
-        command = popen.call_args[0][0]
-        config = f'model_providers.openrouter.base_url="{self.url(self.proxy)}/api/v1"'
-        self.assertIn(config, command)
-        self.assertLess(command.index(config), command.index('exec'))
+    def test_wrapper_preserves_child_failure_and_signal_exit_codes(self):
+        for program, expected in [('import sys; sys.exit(7)', 7),
+                                  ('import os,signal; os.kill(os.getpid(), signal.SIGTERM)', 143)]:
+            with self.subTest(expected=expected):
+                result = subprocess.run([sys.executable, str(HELPER), sys.executable, '-c', program, 'exec'],
+                                        capture_output=True, timeout=5)
+                self.assertEqual(result.returncode, expected, result.stderr.decode())
 
     @unittest.skipUnless(os.environ.get('WOW_TEST_CODEX_BINARY'), 'Optional local Codex binary capture')
-    def test_real_codex_request_uses_the_directive_without_any_api_credentials(self):
+    def test_real_codex_caching_effort_and_retries_without_api_credentials(self):
         binary = os.environ['WOW_TEST_CODEX_BINARY']
         environment = {'PATH': '/usr/bin:/bin:/usr/sbin:/sbin', 'HOME': str(self.root),
                        'CODEX_HOME': str(self.root / 'codex-home'), 'OPENROUTER_API_KEY': 'fake-key'}
         Path(environment['CODEX_HOME']).mkdir()
-        # Run the real wrapper as a child, replacing only its upstream hostname.
-        # The original Codex URL also points locally, so no branch can bill an API.
+        # Both the original Codex URL and the proxy's upstream point to loopback.
         bootstrap = self.root / 'local-wrapper.py'
         bootstrap.write_text(
             'import importlib.util,sys\n'
             f'spec=importlib.util.spec_from_file_location("cache_adapter", {str(HELPER)!r})\n'
             'module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)\n'
             'original=module.CacheProxy\n'
-            f'module.CacheProxy=lambda path: original(path, upstream={self.url(self.router)!r})\n'
+            f'module.CacheProxy=lambda: original(upstream={self.url(self.router)!r})\n'
             'sys.exit(module.main())\n'
         )
         environment['PYTHONPATH'] = os.pathsep.join(sys.path)
-        for expected in [None, {'type': 'ephemeral'}]:
-            with self.subTest(adapter_enabled=expected is not None):
+        for wrapped, errors in [(False, 0), (True, 0), (True, 1)]:
+            with self.subTest(wrapped=wrapped, rate_limits=errors):
+                self.router.errors_left = errors
+                previous = len(self.router.requests)
                 provider = ('model_providers.openrouter={name="Local mock",'
                             f'base_url="{self.url(self.router)}/api/v1",wire_api="responses",'
                             'auth={command="printenv",args=["OPENROUTER_API_KEY"]}}')
-                command = [
-                    binary, '--config', 'model_provider="openrouter"', '--config', provider,
-                    '--model', 'anthropic/claude-sonnet-5', 'exec', '--skip-git-repo-check',
-                    '--cd', str(self.root), 'Reply briefly; do not use tools.',
-                ]
-                if expected is not None:
-                    command = [sys.executable, str(bootstrap), '--usage-file',
-                               str(self.root / 'wrapper-usage.jsonl'), *command]
+                command = [binary, '--config', 'model_provider="openrouter"', '--config', provider,
+                           '--config', 'model_reasoning_effort="high"', '--model', 'anthropic/claude-opus-5.5',
+                           'exec', '--skip-git-repo-check', '--cd', str(self.root), 'Reply briefly; do not use tools.']
+                if wrapped:
+                    command = [sys.executable, str(bootstrap), *command]
                 result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=20)
                 self.assertEqual(result.returncode, 0, result.stderr[-3000:])
-                self.assertEqual(self.router.requests[-1]['body'].get('cache_control'), expected)
-        self.assertEqual(len(self.router.requests), 2)
-        self.assertEqual(json.loads((self.root / 'wrapper-usage.jsonl').read_text())['cached_tokens'], 5000)
+                captured = self.router.requests[previous:]
+                self.assertEqual(len(captured), 1 + errors)
+                for request in captured:
+                    self.assertEqual(request['body'].get('cache_control'), {'type': 'ephemeral'} if wrapped else None)
+                    self.assertEqual(request['body']['reasoning']['effort'], 'high')
+                self.assertIn('Mock success.', result.stdout)
 
 
 if __name__ == '__main__':
