@@ -284,7 +284,7 @@ resource "aws_batch_compute_environment" "agent" {
     allocation_strategy = "BEST_FIT_PROGRESSIVE"
     min_vcpus           = 0
     desired_vcpus       = 0
-    max_vcpus           = 16
+    max_vcpus           = 32
     instance_type       = ["m6i.2xlarge"]
     instance_role       = aws_iam_instance_profile.agent.arn
     subnets             = [aws_subnet.agent.id]

@@ -69,7 +69,7 @@ is on your `PATH`.
 
 ### Quick start workspace
 
-You can use [agent-wow-workspace](https://github.com/agent-wow/agent-wow-workspace)
+You can use [agent-wow-workspace](https://github.com/TuckerBMorgan/agent-wow-workspace)
 as a starting point for your AI agent. It includes agent instructions and a
 `config.yaml` that keeps all assets within a single directory.
 

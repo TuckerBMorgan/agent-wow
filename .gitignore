@@ -4,6 +4,7 @@
 /tmp/
 /results/
 __pycache__/
+/jobs.sqlite3*
 
 # Local OpenTofu state, provider downloads, and private settings.
 .terraform/

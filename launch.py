@@ -12,9 +12,12 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 import sys
 import time
+
+from jobs import database, record_job
 
 
 class AwsError(RuntimeError):
@@ -164,6 +167,24 @@ def container_overrides(prompt):
     return overrides
 
 
+def submit_job(region, name, definition, overrides):
+    # Check the database before submitting; never retry a submission automatically.
+    with database():
+        pass
+    submission = aws_request(region, 'batch', 'submit-job', '--job-name', name,
+                             '--job-queue', 'agent-wow', '--job-definition', definition,
+                             '--container-overrides', json.dumps(overrides))
+    try:
+        record_job({**submission, 'jobName': name, 'jobDefinition': definition,
+                    'createdAt': int(time.time() * 1000), 'status': 'SUBMITTED',
+                    'container': overrides}, region)
+    except (OSError, sqlite3.Error):
+        print(f'Job {submission["jobId"]} was submitted but could not be recorded. '
+              'Save this job ID; the job is already running or queued. Do not resubmit it.', file=sys.stderr)
+        raise
+    return submission
+
+
 def rebuild(region):
     root = Path(__file__).resolve().parent
     tofu = shutil.which(os.environ.get('WOW_TOFU') or 'tofu')
@@ -201,10 +222,7 @@ def main():
         if not job_id:
             overrides = container_overrides(args.prompt)
             definition = rebuild(args.region) if args.rebuild else os.environ.get('WOW_JOB_DEFINITION', 'agent-wow')
-            # Submission is deliberately not retried: a lost response could otherwise create duplicate jobs.
-            submission = aws_request(args.region, 'batch', 'submit-job', '--job-name', 'agent-wow',
-                                     '--job-queue', 'agent-wow', '--job-definition', definition,
-                                     '--container-overrides', json.dumps(overrides))
+            submission = submit_job(args.region, 'agent-wow', definition, overrides)
             job_id = submission['jobId']
             print(json.dumps(submission), flush=True)
         return follow(job_id, args.region, args.log_group)
@@ -218,7 +236,7 @@ def main():
         else:
             print(f'Launch failed: {error}', file=sys.stderr)
         return error.returncode
-    except (OSError, subprocess.CalledProcessError) as error:
+    except (OSError, sqlite3.Error, subprocess.CalledProcessError) as error:
         print(f'Launch failed: {error}', file=sys.stderr)
         return error.returncode if isinstance(error, subprocess.CalledProcessError) else 1
     except ValueError as error:

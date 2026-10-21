@@ -155,6 +155,7 @@ class PromptLaunchTests(unittest.TestCase):
         self.project = self.root / 'project'
         self.project.mkdir()
         shutil.copyfile(REPOSITORY / 'launch.py', self.project / 'launch.py')
+        shutil.copyfile(REPOSITORY / 'jobs.py', self.project / 'jobs.py')
         (self.project / 'launch-runner.py').write_text(RUNNER)
         # Never inherit real credentials, profiles, keys, or user configuration.
         self.env = {

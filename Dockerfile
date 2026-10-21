@@ -92,7 +92,7 @@ RUN git init /opt/agent-wow \
     && GOBIN=/usr/local/bin go install google.golang.org/grpc/cmd/protoc-gen-go-grpc
 
 RUN git clone --depth 1 https://github.com/agent-wow/go-module-template.git /opt/go-module-template \
-    && git clone --depth 1 https://github.com/agent-wow/agent-wow-workspace.git /opt/workspace-template \
+    && git clone --depth 1 https://github.com/TuckerBMorgan/agent-wow-workspace.git /opt/workspace-template \
     && git clone --depth 1 --branch "${AZEROTHCORE_REF}" \
          https://github.com/azerothcore/azerothcore-wotlk.git /opt/azerothcore-reference \
     && mkdir -p /opt/server /workspace
