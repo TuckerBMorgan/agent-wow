@@ -38,7 +38,7 @@ FROM node:24-bookworm-slim
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG DEBIAN_FRONTEND=noninteractive
-ARG CODEX_VERSION=latest
+ARG CODEX_VERSION=0.163.0
 ARG AGENT_WOW_REPOSITORY=https://github.com/TuckerBMorgan/agent-wow.git
 ARG AGENT_WOW_REF=main
 ARG AZEROTHCORE_REF=master
@@ -297,9 +297,9 @@ echo "Starting the game task. Run log: $run_dir/agent.log"
 echo "Codex provider: $provider; model: ${model:-Codex default}"
 echo "Reasoning effort override: ${effort:-unset (Codex/provider default)}"
 
-# Anthropic requires an explicit cache directive; OpenAI caches automatically.
-# Keep this adapter out of other providers' request paths.
-if [[ "$provider" == openrouter && "$model" == anthropic/* ]]; then
+# Capture OpenRouter HTTP error details before Codex discards the response body.
+# The same adapter adds the cache directive only for Anthropic models.
+if [[ "$provider" == openrouter ]]; then
     codex_cli=(/usr/local/bin/codex-openrouter-cache "${codex_cli[@]}")
 fi
 

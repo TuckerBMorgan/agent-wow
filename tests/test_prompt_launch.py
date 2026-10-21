@@ -372,9 +372,9 @@ class PromptLaunchTests(unittest.TestCase):
         )
         self.assert_succeeded(result)
         calls = self.records('calls.jsonl')
-        self.assertEqual(len(calls), 1, 'OpenRouter must not request browser login')
-        self.assertIn('exec', calls[0]['args'])
-        args = calls[0]['args']
+        self.assertEqual([call['tool'] for call in calls], ['codex-openrouter-cache', 'codex'])
+        self.assertIn('exec', calls[-1]['args'])
+        args = calls[-1]['args']
         self.assertEqual(args[args.index('--model') + 1], 'openai/gpt-6.1-sol')
         self.assertEqual(json.loads((self.root / 'codex-key-names.json').read_text()), ['OPENROUTER_API_KEY'])
 

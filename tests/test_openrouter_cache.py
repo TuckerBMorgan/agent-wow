@@ -1,7 +1,9 @@
 """Offline HTTP tests: fake credentials and a loopback-only OpenRouter server."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from contextlib import redirect_stderr
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -9,9 +11,12 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
+from unittest.mock import patch
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -55,10 +60,13 @@ class FakeRouter(BaseHTTPRequestHandler):
         self.send_response(status)
         if status != 200:
             self.send_header('Content-Type', 'application/json')
-            self.send_header('Retry-After', '1')
+            if not getattr(self.server, 'omit_retry_after', False):
+                self.send_header('Retry-After', '1')
             self.send_header('X-RateLimit-Remaining', '0')
+            for name, value in getattr(self.server, 'error_headers', {}).items():
+                self.send_header(name, value)
             self.end_headers()
-            self.wfile.write(b'{"error":{"message":"Local mock rate limit"}}')
+            self.wfile.write(getattr(self.server, 'error_body', b'{"error":{"message":"Local mock rate limit"}}'))
             return
         final = completed(self.server.cached)
         if getattr(self.server, 'json_response', False):
@@ -138,6 +146,7 @@ class CacheTests(unittest.TestCase):
 
     def test_rate_limit_status_headers_and_body_survive(self):
         self.router.status = 429
+        self.router.error_headers = {'X-RateLimit-Reset': str(int(time.time() * 1000) + 60000)}
         with self.assertRaises(HTTPError) as caught:
             urlopen(self.request(), timeout=5)
         with caught.exception as response:
@@ -146,6 +155,100 @@ class CacheTests(unittest.TestCase):
             self.assertEqual(response.headers['X-RateLimit-Remaining'], '0')
             self.assertEqual(response.read(), b'{"error":{"message":"Local mock rate limit"}}')
         self.assertEqual(len(self.router.requests), 1, 'The proxy must not retry requests itself')
+
+    def test_reset_timestamp_adds_retry_advice_without_replaying_or_changing_error(self):
+        self.router.status = 429
+        self.router.omit_retry_after = True
+        self.router.error_headers = {'X-RateLimit-Reset': '1025000', 'X-RateLimit-Limit': '20'}
+        diagnostics = io.StringIO()
+        with patch.object(adapter.time, 'time', return_value=1000.25), \
+                patch.object(adapter.random, 'randint', return_value=2), redirect_stderr(diagnostics):
+            with self.assertRaises(HTTPError) as caught:
+                urlopen(self.request('openai/gpt-6.1-sol'), timeout=5)
+            with caught.exception as response:
+                self.assertEqual(response.code, 429)
+                self.assertEqual(response.headers['Retry-After'], '27')
+                self.assertEqual(response.headers['X-RateLimit-Reset'], '1025000')
+                self.assertEqual(response.read(), b'{"error":{"message":"Local mock rate limit"}}')
+        self.assertEqual(len(self.router.requests), 1)
+        record = json.loads(diagnostics.getvalue().removeprefix('OpenRouter HTTP error: '))
+        self.assertEqual(record['retry_after_added_seconds'], 27)
+        self.assertNotIn('Retry-After', record['headers'], 'Log upstream advice separately from the added delay')
+
+    def test_invalid_reset_and_other_errors_do_not_gain_retry_advice(self):
+        cases = [(429, {}), (429, {'X-RateLimit-Reset': 'soon'}),
+                 (429, {'X-RateLimit-Reset': 'NaN'}), (429, {'X-RateLimit-Reset': '0'}),
+                 (429, {'X-RateLimit-Reset': '-1'}), (429, {'X-RateLimit-Reset': '9' * 400}),
+                 (403, {'X-RateLimit-Reset': '1025000'}),
+                 (200, {'X-RateLimit-Reset': '1025000'}),
+                 (429, {'X-RateLimit-Reset': '1025000', 'Retry-After': '60'})]
+        for status, headers in cases:
+            with self.subTest(status=status, headers=headers):
+                self.assertIsNone(adapter.retry_delay(SimpleNamespace(status_code=status, headers=headers)))
+
+    def test_expired_reset_waits_briefly_and_jitter_spreads_future_retries(self):
+        with patch.object(adapter.time, 'time', return_value=1000.25):
+            for jitter in [1, 2, 3]:
+                with self.subTest(jitter=jitter), patch.object(adapter.random, 'randint', return_value=jitter):
+                    for reset, base_delay in [('990000', 0), ('1025000', 25)]:
+                        response = SimpleNamespace(status_code=429, headers={'X-RateLimit-Reset': reset})
+                        self.assertEqual(adapter.retry_delay(response), base_delay + jitter)
+
+    def test_sol_rate_limit_diagnostics_preserve_metadata_without_credentials_or_retries(self):
+        self.router.status = 429
+        self.router.omit_retry_after = True
+        self.router.error_headers = {'CF-Ray': 'local-ray-PDX', 'X-Request-ID': 'local-request',
+                                    'Set-Cookie': 'private-cookie'}
+        self.router.error_body = json.dumps({'error': {
+            'code': 429, 'message': 'Provider capacity: Bearer fake-key',
+            'metadata': {'provider_code': 'rate_limit_exceeded', 'api_key': 'private-value',
+                         'raw': 'password="private-password"; sk-not-a-real-key'},
+        }}).encode()
+        diagnostics = io.StringIO()
+        with redirect_stderr(diagnostics):
+            with self.assertRaises(HTTPError) as caught:
+                urlopen(self.request('openai/gpt-6.1-sol'), timeout=5)
+            with caught.exception as response:
+                self.assertIsNone(response.headers.get('Retry-After'))
+                self.assertEqual(response.read(), self.router.error_body)
+        self.assertEqual(len(self.router.requests), 1)
+        self.assertNotIn('cache_control', self.router.requests[0]['body'])
+        output = diagnostics.getvalue()
+        for secret in ['fake-key', 'private-value', 'private-password', 'sk-not-a-real-key', 'private-cookie']:
+            self.assertNotIn(secret, output)
+        record = json.loads(output.removeprefix('OpenRouter HTTP error: '))
+        self.assertEqual(record['status'], 429)
+        self.assertEqual(record['model'], 'openai/gpt-6.1-sol')
+        self.assertEqual(record['path'], '/api/v1/responses')
+        self.assertEqual(record['body']['error']['metadata']['provider_code'], 'rate_limit_exceeded')
+        self.assertEqual(record['headers']['CF-Ray'], 'local-ray-PDX')
+        self.assertNotIn('Set-Cookie', record['headers'])
+        self.assertNotIn('Local test prompt', output)
+
+    def test_non_json_error_is_redacted_and_capture_is_bounded(self):
+        self.router.status = 429
+        self.router.error_body = (b'password="private-value" Bearer fake-key ' + b'x' * 20000)
+        diagnostics = io.StringIO()
+        with redirect_stderr(diagnostics):
+            with self.assertRaises(HTTPError) as caught:
+                urlopen(self.request(), timeout=5)
+            with caught.exception as response:
+                self.assertEqual(response.read(), self.router.error_body)
+        record = json.loads(diagnostics.getvalue().removeprefix('OpenRouter HTTP error: '))
+        self.assertTrue(record['body_truncated'])
+        self.assertLessEqual(len(record['body']), adapter.ERROR_BODY_LIMIT)
+        self.assertNotIn('private-value', record['body'])
+        self.assertNotIn('fake-key', record['body'])
+
+    def test_known_secret_redaction_covers_plain_error_text(self):
+        diagnostics = io.StringIO()
+        with redirect_stderr(diagnostics):
+            adapter.log_http_error(SimpleNamespace(status_code=403, headers={}),
+                                   b'<html>echoed unusual-key-value</html>',
+                                   path='/api/v1/responses?private=query', model='test',
+                                   request_bytes=42, elapsed=0.1, secrets=['unusual-key-value'])
+        self.assertNotIn('unusual-key-value', diagnostics.getvalue())
+        self.assertNotIn('private=query', diagnostics.getvalue())
 
     def test_cache_misses_do_not_stop_the_agent(self):
         self.router.cached = 0
@@ -210,6 +313,45 @@ class CacheTests(unittest.TestCase):
                     self.assertEqual(request['body'].get('cache_control'), {'type': 'ephemeral'} if wrapped else None)
                     self.assertEqual(request['body']['reasoning']['effort'], 'high')
                 self.assertIn('Mock success.', result.stdout)
+
+        # Sol must expose the original 429 even when Codex exits without retrying.
+        self.router.status = 429
+        self.router.omit_retry_after = True
+        previous = len(self.router.requests)
+        command[command.index('anthropic/claude-opus-5.5')] = 'openai/gpt-6.1-sol'
+        result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=20)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(len(self.router.requests) - previous, 1)
+        self.assertIn('OpenRouter HTTP error:', result.stderr)
+        self.assertIn('Local mock rate limit', result.stderr)
+        self.assertIn('exceeded retry limit', result.stderr)
+        self.assertNotIn('fake-key', result.stdout + result.stderr)
+
+        # Match the production failure: reset in milliseconds, no Retry-After.
+        # The real CLI must wait, retry the same turn, and complete without a new session.
+        self.router.status = 200
+        for model in ['openai/gpt-6.1-sol', 'anthropic/claude-opus-5.5']:
+            with self.subTest(reset_without_retry_after=model):
+                self.router.errors_left = 1
+                self.router.error_headers = {'X-RateLimit-Reset': str(int(time.time() * 1000) + 500)}
+                previous = len(self.router.requests)
+                command[command.index('--model') + 1] = model
+                started = time.monotonic()
+                result = subprocess.run(command, env=environment, capture_output=True, text=True, timeout=20)
+                self.assertEqual(result.returncode, 0, result.stderr[-3000:])
+                self.assertGreaterEqual(time.monotonic() - started, 1)
+                captured = self.router.requests[previous:]
+                self.assertEqual(len(captured), 2)
+                self.assertEqual(captured[0]['body']['input'], captured[1]['body']['input'])
+                for request in captured:
+                    self.assertEqual(request['body']['model'], model)
+                    self.assertEqual(request['body']['reasoning']['effort'], 'high')
+                    expected = {'type': 'ephemeral'} if model.startswith('anthropic/') else None
+                    self.assertEqual(request['body'].get('cache_control'), expected)
+                self.assertIn('Mock success.', result.stdout)
+                self.assertIn('retry_after_added_seconds', result.stderr)
+                self.assertIn('Reconnecting', result.stderr)
+                self.assertNotIn('fake-key', result.stdout + result.stderr)
 
 
 if __name__ == '__main__':
