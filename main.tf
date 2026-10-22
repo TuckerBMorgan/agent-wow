@@ -328,7 +328,7 @@ resource "aws_batch_job_queue" "test" {
   }
 }
 
-# The supervisor retrieves the OpenRouter key at startup; overrides contain no keys.
+# Codex uses OpenRouter by default. The supervisor loads only the selected API key.
 resource "aws_batch_job_definition" "agent" {
   name                  = "agent-wow"
   type                  = "container"
@@ -352,8 +352,10 @@ resource "aws_batch_job_definition" "agent" {
     environment = [
       { name = "AWS_DEFAULT_REGION", value = var.aws_region },
       { name = "AWS_RESULTS_BUCKET", value = aws_s3_bucket.results.id },
-      { name = "CLAUDE_MODEL", value = "anthropic/claude-opus-5.5" },
-      { name = "CLAUDE_EFFORT", value = "high" },
+      { name = "CODEX_MODEL_PROVIDER", value = "openrouter" },
+      { name = "CODEX_MODEL", value = "openai/gpt-6.1-sol" },
+      { name = "CODEX_REASONING_EFFORT", value = "high" },
+      { name = "CODEX_SECRET_ARN", value = aws_secretsmanager_secret.codex.arn },
       { name = "OPENROUTER_SECRET_ARN", value = aws_secretsmanager_secret.openrouter.arn }
     ]
     logConfiguration = {

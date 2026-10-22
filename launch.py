@@ -3,15 +3,14 @@
 
 Usage: python3 launch.py [--rebuild] ["prompt"]
        python3 launch.py --watch JOB_ID
-CLAUDE_MODEL selects an Anthropic model through OpenRouter (default: Opus 5.5).
-CLAUDE_EFFORT sets reasoning effort (default: high).
+CODEX_MODEL_PROVIDER and CODEX_MODEL select the provider and model at launch.
+Defaults to OpenRouter, openai/gpt-6.1-sol, and high reasoning effort.
 """
 
 import argparse
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import sqlite3
 import subprocess
@@ -144,16 +143,23 @@ def follow(job_id, region, log_group, poll_seconds=5, final_wait_seconds=15):
 
 
 def container_overrides(prompt):
-    model = os.environ.get('CLAUDE_MODEL', 'anthropic/claude-opus-5.5')
-    effort = os.environ.get('CLAUDE_EFFORT', 'high')
-    if not re.fullmatch(r'anthropic/[A-Za-z0-9_./:~+\[\]-]+', model):
-        raise ValueError('CLAUDE_MODEL must be an Anthropic OpenRouter model ID.')
-    if effort not in ('low', 'medium', 'high', 'xhigh', 'max'):
-        raise ValueError('CLAUDE_EFFORT must be low, medium, high, xhigh, or max.')
-    overrides = {'environment': [
-        {'name': 'CLAUDE_MODEL', 'value': model},
-        {'name': 'CLAUDE_EFFORT', 'value': effort},
-    ]}
+    provider = os.environ.get('CODEX_MODEL_PROVIDER', 'openrouter')
+    model = os.environ.get('CODEX_MODEL', 'openai/gpt-6.1-sol' if provider == 'openrouter' else 'gpt-6.1-sol')
+    effort = os.environ.get('CODEX_REASONING_EFFORT', 'high')
+    if provider not in ('openai', 'openrouter'):
+        raise ValueError('CODEX_MODEL_PROVIDER must be openai or openrouter.')
+    if ('CODEX_MODEL' in os.environ or provider == 'openrouter') and not model.strip():
+        raise ValueError('Set CODEX_MODEL to a nonempty model ID.')
+    if effort is not None:
+        if effort not in ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'):
+            raise ValueError('CODEX_REASONING_EFFORT must be none, minimal, low, medium, high, xhigh, max, or ultra.')
+        if model in ('gpt-6.1-sol', 'openai/gpt-6.1-sol') and effort not in ('low', 'medium', 'high', 'xhigh', 'max'):
+            raise ValueError('Sol 6.1 supports only low, medium, high, xhigh, or max reasoning effort.')
+    overrides = {'environment': [{'name': 'CODEX_MODEL_PROVIDER', 'value': provider}]}
+    if model:
+        overrides['environment'].append({'name': 'CODEX_MODEL', 'value': model})
+    if effort is not None:
+        overrides['environment'].append({'name': 'CODEX_REASONING_EFFORT', 'value': effort})
     if prompt is not None:
         if not prompt.strip():
             raise ValueError('Prompt must not be blank.')
