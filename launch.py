@@ -3,14 +3,15 @@
 
 Usage: python3 launch.py [--rebuild] ["prompt"]
        python3 launch.py --watch JOB_ID
-CODEX_MODEL_PROVIDER and CODEX_MODEL select the provider and model at launch.
-CODEX_REASONING_EFFORT optionally sets the model's reasoning effort.
+CLAUDE_MODEL selects an Anthropic model through OpenRouter (default: Opus 5.5).
+CLAUDE_EFFORT sets reasoning effort (default: high).
 """
 
 import argparse
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -143,23 +144,16 @@ def follow(job_id, region, log_group, poll_seconds=5, final_wait_seconds=15):
 
 
 def container_overrides(prompt):
-    provider = os.environ.get('CODEX_MODEL_PROVIDER', 'openai')
-    model = os.environ.get('CODEX_MODEL', '')
-    effort = os.environ.get('CODEX_REASONING_EFFORT')
-    if provider not in ('openai', 'openrouter'):
-        raise ValueError('CODEX_MODEL_PROVIDER must be openai or openrouter.')
-    if ('CODEX_MODEL' in os.environ or provider == 'openrouter') and not model.strip():
-        raise ValueError('Set CODEX_MODEL to a nonempty model ID.')
-    if effort is not None:
-        if effort not in ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'):
-            raise ValueError('CODEX_REASONING_EFFORT must be none, minimal, low, medium, high, xhigh, max, or ultra.')
-        if model in ('gpt-6.1-sol', 'openai/gpt-6.1-sol') and effort not in ('low', 'medium', 'high', 'xhigh', 'max'):
-            raise ValueError('Sol 6.1 supports only low, medium, high, xhigh, or max reasoning effort.')
-    overrides = {'environment': [{'name': 'CODEX_MODEL_PROVIDER', 'value': provider}]}
-    if model:
-        overrides['environment'].append({'name': 'CODEX_MODEL', 'value': model})
-    if effort is not None:
-        overrides['environment'].append({'name': 'CODEX_REASONING_EFFORT', 'value': effort})
+    model = os.environ.get('CLAUDE_MODEL', 'anthropic/claude-opus-5.5')
+    effort = os.environ.get('CLAUDE_EFFORT', 'high')
+    if not re.fullmatch(r'anthropic/[A-Za-z0-9_./:~+\[\]-]+', model):
+        raise ValueError('CLAUDE_MODEL must be an Anthropic OpenRouter model ID.')
+    if effort not in ('low', 'medium', 'high', 'xhigh', 'max'):
+        raise ValueError('CLAUDE_EFFORT must be low, medium, high, xhigh, or max.')
+    overrides = {'environment': [
+        {'name': 'CLAUDE_MODEL', 'value': model},
+        {'name': 'CLAUDE_EFFORT', 'value': effort},
+    ]}
     if prompt is not None:
         if not prompt.strip():
             raise ValueError('Prompt must not be blank.')
@@ -167,12 +161,12 @@ def container_overrides(prompt):
     return overrides
 
 
-def submit_job(region, name, definition, overrides):
+def submit_job(region, name, definition, overrides, queue='agent-wow'):
     # Check the database before submitting; never retry a submission automatically.
     with database():
         pass
     submission = aws_request(region, 'batch', 'submit-job', '--job-name', name,
-                             '--job-queue', 'agent-wow', '--job-definition', definition,
+                             '--job-queue', queue, '--job-definition', definition,
                              '--container-overrides', json.dumps(overrides))
     try:
         record_job({**submission, 'jobName': name, 'jobDefinition': definition,
@@ -212,6 +206,7 @@ def main():
     mode.add_argument('--rebuild', action='store_true', help='Build/push the image and apply OpenTofu before launching.')
     mode.add_argument('--watch', metavar='JOB_ID', help='Watch an existing job without launching another.')
     parser.add_argument('prompt', nargs='?', help='Override the image default task; quote as one argument.')
+    parser.add_argument('--queue', default='agent-wow', help='Batch queue; agent-wow-test has higher priority.')
     parser.add_argument('--region', default='us-west-2')
     parser.add_argument('--log-group', default='/aws/batch/agent-wow')
     args = parser.parse_args()
@@ -222,7 +217,7 @@ def main():
         if not job_id:
             overrides = container_overrides(args.prompt)
             definition = rebuild(args.region) if args.rebuild else os.environ.get('WOW_JOB_DEFINITION', 'agent-wow')
-            submission = submit_job(args.region, 'agent-wow', definition, overrides)
+            submission = submit_job(args.region, 'agent-wow', definition, overrides, args.queue)
             job_id = submission['jobId']
             print(json.dumps(submission), flush=True)
         return follow(job_id, args.region, args.log_group)

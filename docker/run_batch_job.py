@@ -19,7 +19,7 @@ class Results:
         self.prefix = f'runs/{job_id}'
         self.workspace = workspace
         self.secrets = sorted({
-            value.encode() for name in ('CODEX_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY')
+            value.encode() for name in ('OPENROUTER_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY')
             if (value := os.environ.get(name))
         }, key=len, reverse=True)
         self.uploaded = {}
@@ -33,9 +33,10 @@ class Results:
         self.put('status.json', json.dumps({
             'state': state,
             'process_exit_code': exit_code,
-            'provider': os.environ.get('CODEX_MODEL_PROVIDER', 'openai'),
-            'model_override': os.environ.get('CODEX_MODEL'),
-            'reasoning_effort_override': os.environ.get('CODEX_REASONING_EFFORT'),
+            'harness': 'claude-code',
+            'provider': 'openrouter',
+            'model': os.environ.get('CLAUDE_MODEL', 'anthropic/claude-opus-5.5'),
+            'reasoning_effort': os.environ.get('CLAUDE_EFFORT', 'high'),
             'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
             'quest_completion': 'Verify server-confirmed turn-ins in journal; exit 0 alone is not proof.',
         }).encode())
@@ -143,28 +144,17 @@ def main():
     if not bucket or not job_id:
         print('Batch requires AWS_RESULTS_BUCKET and AWS_BATCH_JOB_ID.', flush=True)
         return 1
-    provider = os.environ.get('CODEX_MODEL_PROVIDER', 'openai')
-    key_name, secret_name = {
-        'openai': ('CODEX_API_KEY', 'CODEX_SECRET_ARN'),
-        'openrouter': ('OPENROUTER_API_KEY', 'OPENROUTER_SECRET_ARN'),
-    }.get(provider, (None, None))
-    if key_name is None:
-        print('CODEX_MODEL_PROVIDER must be openai or openrouter.', flush=True)
-        return 2
-    if provider == 'openrouter' and not os.environ.get('CODEX_MODEL', '').strip():
-        print('OpenRouter requires CODEX_MODEL with an OpenRouter model ID.', flush=True)
-        return 2
     client_config = Config(
         connect_timeout=3, read_timeout=5, retries={'total_max_attempts': 1},
     )
     # ARNs are safe job configuration; the key stays in memory and is inherited
     # only by this job's child process. Local runs can supply the key directly.
-    secret_arn = os.environ.get(secret_name)
-    if not os.environ.get(key_name) and secret_arn:
+    secret_arn = os.environ.get('OPENROUTER_SECRET_ARN')
+    if not os.environ.get('OPENROUTER_API_KEY') and secret_arn:
         secrets = boto3.client('secretsmanager', config=client_config)
-        os.environ[key_name] = secrets.get_secret_value(SecretId=secret_arn)['SecretString']
-    if not os.environ.get(key_name, '').strip():
-        print(f'Batch requires a nonempty {key_name} for {provider}.', flush=True)
+        os.environ['OPENROUTER_API_KEY'] = secrets.get_secret_value(SecretId=secret_arn)['SecretString']
+    if not os.environ.get('OPENROUTER_API_KEY', '').strip():
+        print('Batch requires a nonempty OPENROUTER_API_KEY.', flush=True)
         return 1
     client = boto3.client('s3', config=client_config)
     results = Results(client, bucket, job_id)

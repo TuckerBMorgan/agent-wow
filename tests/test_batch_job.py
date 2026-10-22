@@ -51,7 +51,7 @@ class BatchJobTests(unittest.TestCase):
     def setUp(self):
         # Never inherit real credentials or inspect the caller's credential files.
         self.addCleanup(mock.patch.stopall)
-        mock.patch.dict(os.environ, {'CODEX_API_KEY': FAKE_KEY}, clear=True).start()
+        mock.patch.dict(os.environ, {'OPENROUTER_API_KEY': FAKE_KEY}, clear=True).start()
         self.directory = tempfile.TemporaryDirectory(prefix='agent-wow-batch-test-')
         self.addCleanup(self.directory.cleanup)
         self.workspace = Path(self.directory.name) / 'workspace'
@@ -75,10 +75,11 @@ class BatchJobTests(unittest.TestCase):
 
     def test_status_records_requested_effort_and_distinguishes_unset(self):
         self.results.status('running')
-        self.assertIsNone(self.statuses()[-1]['reasoning_effort_override'])
-        with mock.patch.dict(os.environ, {'CODEX_REASONING_EFFORT': 'high'}):
+        self.assertEqual(self.statuses()[-1]['reasoning_effort'], 'high')
+        self.assertEqual(self.statuses()[-1]['harness'], 'claude-code')
+        with mock.patch.dict(os.environ, {'CLAUDE_EFFORT': 'high'}):
             self.results.status('running')
-        self.assertEqual(self.statuses()[-1]['reasoning_effort_override'], 'high')
+        self.assertEqual(self.statuses()[-1]['reasoning_effort'], 'high')
 
     def test_exports_only_reports_and_journal_and_redacts_exact_api_key(self):
         self.write('journal/quest.json', b'{"turn_in_confirmed": true}')
@@ -100,28 +101,20 @@ class BatchJobTests(unittest.TestCase):
         self.assertTrue(all(call['Bucket'] == 'test-results' for call in self.client.calls))
         self.assertNotIn(FAKE_KEY.encode(), b''.join(self.client.objects.values()))
 
-    def test_loads_only_the_selected_provider_secret(self):
-        for provider, key_name, arn in (
-            ('openai', 'CODEX_API_KEY', 'fake-openai-secret'),
-            ('openrouter', 'OPENROUTER_API_KEY', 'fake-openrouter-secret'),
-        ):
-            with self.subTest(provider=provider):
-                secrets = mock.Mock()
-                secrets.get_secret_value.return_value = {'SecretString': FAKE_KEY}
-                environment = {
-                    'AWS_RESULTS_BUCKET': 'test-results', 'AWS_BATCH_JOB_ID': 'test-job',
-                    'CODEX_MODEL_PROVIDER': provider, 'CODEX_MODEL': 'test-model',
-                    'CODEX_SECRET_ARN': 'fake-openai-secret',
-                    'OPENROUTER_SECRET_ARN': 'fake-openrouter-secret',
-                }
-                with mock.patch.dict(os.environ, environment, clear=True), \
-                     mock.patch.object(WRAPPER.boto3, 'client', side_effect=[secrets, self.client]), \
-                     mock.patch.object(WRAPPER, 'run', return_value=0):
-                    self.assertEqual(WRAPPER.main(), 0)
-                    self.assertEqual(os.environ[key_name], FAKE_KEY)
-                    other_key = 'OPENROUTER_API_KEY' if provider == 'openai' else 'CODEX_API_KEY'
-                    self.assertNotIn(other_key, os.environ)
-                secrets.get_secret_value.assert_called_once_with(SecretId=arn)
+    def test_loads_existing_openrouter_secret(self):
+        secrets = mock.Mock()
+        secrets.get_secret_value.return_value = {'SecretString': FAKE_KEY}
+        environment = {
+            'AWS_RESULTS_BUCKET': 'test-results', 'AWS_BATCH_JOB_ID': 'test-job',
+            'OPENROUTER_SECRET_ARN': 'fake-openrouter-secret',
+        }
+        with mock.patch.dict(os.environ, environment, clear=True), \
+             mock.patch.object(WRAPPER.boto3, 'client', side_effect=[secrets, self.client]), \
+             mock.patch.object(WRAPPER, 'run', return_value=0):
+            self.assertEqual(WRAPPER.main(), 0)
+            self.assertEqual(os.environ['OPENROUTER_API_KEY'], FAKE_KEY)
+            self.assertNotIn('ANTHROPIC_AUTH_TOKEN', os.environ)
+        secrets.get_secret_value.assert_called_once_with(SecretId='fake-openrouter-secret')
 
     def test_skips_symlink_files_directories_and_fifo(self):
         outside = Path(self.directory.name) / 'private'

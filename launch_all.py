@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Queue every race/class pairing; AWS Batch starts jobs as capacity opens.
 
-Uses the existing image and the same CODEX_* settings as launch.py.
+Uses the existing image and the same CLAUDE_* settings as launch.py.
 Each invocation submits a fresh set of jobs.
 """
 

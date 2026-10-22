@@ -29,9 +29,8 @@ class JobHistoryTests(unittest.TestCase):
     def test_submission_records_exact_prompt_and_settings_without_secrets(self):
         prompt = 'Create "Orc"; don\'t evaluate $(anything).\nAnother line.'
         overrides = {'command': ['run-wow-agent', prompt], 'environment': [
-            {'name': 'CODEX_MODEL_PROVIDER', 'value': 'openrouter'},
-            {'name': 'CODEX_MODEL', 'value': 'anthropic/test'},
-            {'name': 'CODEX_REASONING_EFFORT', 'value': 'high'},
+            {'name': 'CLAUDE_MODEL', 'value': 'anthropic/test'},
+            {'name': 'CLAUDE_EFFORT', 'value': 'high'},
             {'name': 'OPENROUTER_API_KEY', 'value': 'fake-secret-must-not-persist'},
         ]}
         with mock.patch.object(launch, 'aws_request', return_value={'jobId': 'one'}) as api:

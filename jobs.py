@@ -35,8 +35,8 @@ def record_job(job, region):
     with database() as db:
         db.execute('INSERT OR REPLACE INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (
             job['jobId'], job['jobName'], region, job.get('jobDefinition'),
-            job.get('createdAt'), job['status'], settings.get('CODEX_MODEL_PROVIDER', 'openai'),
-            settings.get('CODEX_MODEL'), settings.get('CODEX_REASONING_EFFORT'), prompt,
+            job.get('createdAt'), job['status'], 'openrouter',
+            settings.get('CLAUDE_MODEL', 'anthropic/claude-opus-5.5'), settings.get('CLAUDE_EFFORT', 'high'), prompt,
             job.get('startedAt'), job.get('stoppedAt'), container.get('exitCode'),
         ))
 

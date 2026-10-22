@@ -6,7 +6,7 @@
 # Apply creates infrastructure only. Before submitting a job:
 #   1. Build this Dockerfile for linux/amd64 and push it to image_uri below.
 #   2. For OpenRouter, save OPENROUTER_API_KEY in config/openrouter.env, then run
-#      python3 upload-openrouter-key.py. OpenAI uses the existing Codex secret.
+#      python3 upload-openrouter-key.py.
 #      Keys are uploaded outside OpenTofu so they never enter its state or plan.
 #   3. Run the submit_job command printed by tofu output.
 # Use a new image_tag for each new image build; apply then registers that version.
@@ -317,8 +317,18 @@ resource "aws_batch_job_queue" "agent" {
   }
 }
 
-# One job definition supports both providers. The supervisor retrieves only
-# the selected key at startup, keeping secret values out of job overrides.
+# Tests take available capacity ahead of the normal queue; running jobs continue.
+resource "aws_batch_job_queue" "test" {
+  name     = "agent-wow-test"
+  state    = "ENABLED"
+  priority = 100
+  compute_environment_order {
+    order               = 1
+    compute_environment = aws_batch_compute_environment.agent.arn
+  }
+}
+
+# The supervisor retrieves the OpenRouter key at startup; overrides contain no keys.
 resource "aws_batch_job_definition" "agent" {
   name                  = "agent-wow"
   type                  = "container"
@@ -342,8 +352,8 @@ resource "aws_batch_job_definition" "agent" {
     environment = [
       { name = "AWS_DEFAULT_REGION", value = var.aws_region },
       { name = "AWS_RESULTS_BUCKET", value = aws_s3_bucket.results.id },
-      { name = "CODEX_MODEL_PROVIDER", value = "openai" },
-      { name = "CODEX_SECRET_ARN", value = aws_secretsmanager_secret.codex.arn },
+      { name = "CLAUDE_MODEL", value = "anthropic/claude-opus-5.5" },
+      { name = "CLAUDE_EFFORT", value = "high" },
       { name = "OPENROUTER_SECRET_ARN", value = aws_secretsmanager_secret.openrouter.arn }
     ]
     logConfiguration = {
@@ -378,6 +388,9 @@ output "openrouter_secret_arn" {
 }
 output "job_queue" {
   value = aws_batch_job_queue.agent.name
+}
+output "test_job_queue" {
+  value = aws_batch_job_queue.test.name
 }
 output "job_definition" {
   value = aws_batch_job_definition.agent.arn
