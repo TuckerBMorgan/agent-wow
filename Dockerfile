@@ -196,17 +196,7 @@ COPY <<'TASK' /opt/orc-quest-task.txt
 Create an night elf druid and complete every available quest in the starting area
 TASK
 
-COPY --chmod=755 docker/run_codex.py /usr/local/bin/run-wow-codex
-COPY --chmod=755 docker/run_claude.py /usr/local/bin/run-wow-claude
-COPY --chmod=755 <<'BASH' /usr/local/bin/run-wow-agent
-#!/bin/bash
-set -Eeuo pipefail
-case "${AGENT_WOW_HARNESS:-codex}" in
-    codex) exec run-wow-codex "$@" ;;
-    claude) exec run-wow-claude "$@" ;;
-    *) echo 'AGENT_WOW_HARNESS must be codex or claude.' >&2; exit 2 ;;
-esac
-BASH
+COPY --chmod=755 docker/run_agent.py /usr/local/bin/run-wow-agent
 
 RUN /opt/venv/bin/pip install --no-cache-dir boto3
 

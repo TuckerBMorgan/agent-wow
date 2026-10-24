@@ -6,5 +6,4 @@
 !docker/prepare_wow_account.py
 !docker/prepare_viewer.py
 !docker/run_batch_job.py
-!docker/run_claude.py
-!docker/run_codex.py
+!docker/run_agent.py
