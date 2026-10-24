@@ -7,6 +7,7 @@ Model, effort, and prompt store explicit overrides; NULL means the default was u
 import argparse
 from contextlib import closing, contextmanager
 import sqlite3
+import time
 from pathlib import Path
 
 from agent_common import harness_spec
@@ -22,26 +23,22 @@ def database():
         db.row_factory = sqlite3.Row
         db.execute('''CREATE TABLE IF NOT EXISTS jobs (
             job_id TEXT PRIMARY KEY, job_name TEXT, region TEXT, job_definition TEXT,
-            created_at INTEGER, status TEXT, provider TEXT, model TEXT, effort TEXT,
-            prompt TEXT, started_at INTEGER, stopped_at INTEGER, exit_code INTEGER
+            created_at INTEGER, provider TEXT, model TEXT, effort TEXT, prompt TEXT
         )''')
         yield db
         db.commit()
 
 
-def record_job(job, region):
-    container = job.get('container') or {}
-    settings = {item['name']: item['value'] for item in container.get('environment') or []}
+def record_job(job_id, name, region, definition, overrides):
+    settings = {item['name']: item['value'] for item in overrides.get('environment', [])}
     harness = settings.get('AGENT_WOW_HARNESS', 'codex')
     spec = harness_spec(harness)
-    command = container.get('command') or []
+    command = overrides.get('command', [])
     prompt = command[1] if len(command) == 2 and command[0] == 'run-wow-agent' else None
     with database() as db:
-        db.execute('INSERT OR REPLACE INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (
-            job['jobId'], job['jobName'], region, job.get('jobDefinition'),
-            job.get('createdAt'), job['status'],
+        db.execute('INSERT OR REPLACE INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', (
+            job_id, name, region, definition, int(time.time() * 1000),
             f'{harness}-subscription', settings.get(spec['model_env']), settings.get(spec['effort_env']), prompt,
-            job.get('startedAt'), job.get('stoppedAt'), container.get('exitCode'),
         ))
 
 
@@ -55,7 +52,7 @@ def main():
         parser.exit(1, f'Job history failed: {error}\n')
     print(f'{len(rows)} jobs in {DB_PATH}')
     for row in rows:
-        print(f'{row["job_id"]}  {row["status"]:10}  {row["model"] or "default":30}  '
+        print(f'{row["job_id"]}  {row["model"] or "default":30}  '
               f'{row["effort"] or "default":7}  {row["job_name"]}')
 
 

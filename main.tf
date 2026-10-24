@@ -6,9 +6,9 @@
 # Apply creates infrastructure only. Before submitting a job:
 #   1. Build this Dockerfile for linux/amd64 and push it to image_uri below.
 #   2. Populate the account login secrets outside OpenTofu so they never enter its state.
-#   3. Run the submit_job command printed by tofu output.
+#   3. Submit the job with launch.py.
 # Use a new image_tag for each new image build; apply then registers that version.
-# Commit and push application changes to your fork before build_and_push: the
+# Commit and push application changes to your fork before rebuilding: the
 # Dockerfile fetches application source at the local Git commit from that fork.
 # Every submitted job gets fresh game storage. Reports survive in S3; game disks do not.
 # Compute scales down after an AWS-managed delay. Images, secrets, logs and results
@@ -354,32 +354,21 @@ locals {
   }
 }
 
-resource "aws_batch_job_definition" "codex_subscription" {
-  name                  = "agent-wow-codex-subscription"
+resource "aws_batch_job_definition" "subscription" {
+  for_each = {
+    codex  = { name = "CODEX_AUTH_JSON", valueFrom = aws_secretsmanager_secret.codex_subscription.arn }
+    claude = { name = "CLAUDE_CODE_OAUTH_TOKEN", valueFrom = aws_secretsmanager_secret.claude_subscription.arn }
+  }
+  name                  = "agent-wow-${each.key}-subscription"
   type                  = "container"
   platform_capabilities = ["EC2"]
   retry_strategy { attempts = 1 }
   timeout { attempt_duration_seconds = var.job_timeout_seconds }
   container_properties = jsonencode(merge(local.job_container, {
     environment = concat(local.job_environment, [
-      { name = "AGENT_WOW_HARNESS", value = "codex" }
+      { name = "AGENT_WOW_HARNESS", value = each.key }
     ])
-    secrets = [{ name = "CODEX_AUTH_JSON", valueFrom = aws_secretsmanager_secret.codex_subscription.arn }]
-  }))
-  depends_on = [aws_iam_role_policy.execution, aws_iam_role_policy.job]
-}
-
-resource "aws_batch_job_definition" "claude_subscription" {
-  name                  = "agent-wow-claude-subscription"
-  type                  = "container"
-  platform_capabilities = ["EC2"]
-  retry_strategy { attempts = 1 }
-  timeout { attempt_duration_seconds = var.job_timeout_seconds }
-  container_properties = jsonencode(merge(local.job_container, {
-    environment = concat(local.job_environment, [
-      { name = "AGENT_WOW_HARNESS", value = "claude" }
-    ])
-    secrets = [{ name = "CLAUDE_CODE_OAUTH_TOKEN", valueFrom = aws_secretsmanager_secret.claude_subscription.arn }]
+    secrets = [each.value]
   }))
   depends_on = [aws_iam_role_policy.execution, aws_iam_role_policy.job]
 }
@@ -404,10 +393,7 @@ output "test_job_queue" {
   value = aws_batch_job_queue.test.name
 }
 output "job_definitions" {
-  value = {
-    codex  = aws_batch_job_definition.codex_subscription.arn
-    claude = aws_batch_job_definition.claude_subscription.arn
-  }
+  value = { for harness, definition in aws_batch_job_definition.subscription : harness => definition.arn }
 }
 output "claude_subscription_secret_arn" {
   description = "Populate with the subscription token outside OpenTofu."
@@ -418,22 +404,4 @@ output "results_bucket" {
 }
 output "log_group" {
   value = aws_cloudwatch_log_group.agent.name
-}
-output "submit_job" {
-  description = "Each invocation starts a fresh run; apply alone never submits a job."
-  value       = "aws batch submit-job --region ${var.aws_region} --job-name agent-wow --job-queue ${aws_batch_job_queue.agent.name} --job-definition ${aws_batch_job_definition.codex_subscription.arn}"
-}
-
-output "build_and_push" {
-  description = "Run from this repository after pushing the application commit to your GitHub fork."
-  value       = <<-COMMAND
-    aws ecr get-login-password --region ${var.aws_region} | docker login --username AWS --password-stdin ${split("/", aws_ecr_repository.agent.repository_url)[0]}
-    docker buildx build --platform linux/amd64 --build-arg AGENT_WOW_REF="$(git rev-parse HEAD)" --tag ${local.image_uri} --push .
-  COMMAND
-}
-output "watch_logs" {
-  value = "aws logs tail ${aws_cloudwatch_log_group.agent.name} --region ${var.aws_region} --follow"
-}
-output "results_location" {
-  value = "s3://${aws_s3_bucket.results.id}/runs/<job-id>/"
 }

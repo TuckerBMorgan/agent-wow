@@ -43,7 +43,7 @@ class JobHistoryTests(unittest.TestCase):
         self.assertEqual(row['model'], 'gpt-test')
         self.assertEqual(row['effort'], 'high')
         self.assertEqual(row['region'], 'test-region')
-        self.assertEqual(row['status'], 'SUBMITTED')
+        self.assertTrue({'status', 'started_at', 'stopped_at', 'exit_code'}.isdisjoint(row))
         self.assertEqual(row['job_definition'], 'test-definition:1')
         self.assertNotIn(b'fake-secret', self.path.read_bytes())
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
