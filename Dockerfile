@@ -190,7 +190,9 @@ YAML
 # The server's interactive console may echo its account-creation command;
 # treat the nested server logs as private alongside the saved account file.
 COPY --chmod=755 docker/prepare_wow_account.py /usr/local/bin/prepare_wow_account.py
-COPY --chmod=755 docker/prepare_viewer.py /usr/local/bin/prepare-wow-viewer
+# Spectator implementation is maintained in the separate viewer repository.
+ARG VIEWER_REF=3e5f0adaa8f820ad46c944a0d27299b18710f404
+ADD --chmod=755 https://raw.githubusercontent.com/TuckerBMorgan/agent-wow-viewer/${VIEWER_REF}/docker/prepare_viewer.py /usr/local/bin/prepare-wow-viewer
 
 COPY <<'TASK' /opt/orc-quest-task.txt
 Create an night elf druid and complete every available quest in the starting area

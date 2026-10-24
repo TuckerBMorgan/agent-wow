@@ -5,6 +5,5 @@
 !agent_common.py
 !docker/
 !docker/prepare_wow_account.py
-!docker/prepare_viewer.py
 !docker/run_batch_job.py
 !docker/run_agent.py
