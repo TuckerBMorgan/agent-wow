@@ -67,7 +67,7 @@ def log_claude_event(event, emit):
         emit(event.get('result') or json.dumps(event.get('errors', [])))
 
 
-def run(prompt=None, workspace=Path('/workspace'), default_task=Path('/opt/orc-quest-task.txt'),
+def run(prompt=None, workspace=Path('/workspace'), default_task=Path('/opt/default-task.txt'),
         home=Path('/root/.codex')):
     harness = os.environ.get('AGENT_WOW_HARNESS', 'codex')
     model, effort = model_settings(harness)
