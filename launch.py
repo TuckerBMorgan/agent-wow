@@ -170,9 +170,7 @@ def submit_job(region, name, definition, overrides, queue='agent-wow'):
                              '--job-queue', queue, '--job-definition', definition,
                              '--container-overrides', json.dumps(overrides))
     try:
-        record_job({**submission, 'jobName': name, 'jobDefinition': definition,
-                    'createdAt': int(time.time() * 1000), 'status': 'SUBMITTED',
-                    'container': overrides}, region)
+        record_job(submission['jobId'], name, region, definition, overrides)
     except (OSError, sqlite3.Error):
         print(f'Job {submission["jobId"]} was submitted but could not be recorded. '
               'Save this job ID; the job is already running or queued. Do not resubmit it.', file=sys.stderr)
