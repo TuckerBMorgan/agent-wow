@@ -1,0 +1,81 @@
+name: agent-wow-world
+x-game-env: &game-env
+  AC_LOGIN_DATABASE_INFO: "database;3306;root;${MYSQL_ROOT_PASSWORD};acore_auth"
+  AC_WORLD_DATABASE_INFO: "database;3306;root;${MYSQL_ROOT_PASSWORD};acore_world"
+  AC_CHARACTER_DATABASE_INFO: "database;3306;root;${MYSQL_ROOT_PASSWORD};acore_characters"
+  AC_DATA_DIR: /azerothcore/env/dist/data
+services:
+  database:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Database password is required}
+    volumes:
+      - database:/var/lib/mysql
+    healthcheck:
+      # The temporary initialization server accepts sockets but not TCP.
+      # Require a successful TCP query before starting the importer.
+      test: [CMD-SHELL, 'mysql --protocol=TCP -h 127.0.0.1 -P 3306 -uroot -p"$$MYSQL_ROOT_PASSWORD" --execute="SELECT 1" >/dev/null 2>&1']
+      interval: 5s
+      timeout: 5s
+      retries: 120
+  db-import:
+    image: acore/ac-wotlk-db-import:master
+    platform: linux/amd64
+    environment: *game-env
+    volumes:
+      - configuration:/azerothcore/env/dist/etc
+    depends_on:
+      database:
+        condition: service_healthy
+  client-data:
+    image: acore/ac-wotlk-client-data:master
+    platform: linux/amd64
+    volumes:
+      - client-data:/azerothcore/env/dist/data
+  authserver:
+    image: acore/ac-wotlk-authserver:master
+    platform: linux/amd64
+    environment: *game-env
+    ports:
+      - 127.0.0.1:3724:3724
+    volumes:
+      - configuration:/azerothcore/env/dist/etc
+    healthcheck:
+      test: [CMD, bash, -c, 'exec 3<>/dev/tcp/127.0.0.1/3724']
+      interval: 5s
+      timeout: 3s
+      retries: 120
+    depends_on:
+      database:
+        condition: service_healthy
+      db-import:
+        condition: service_completed_successfully
+  worldserver:
+    image: ${AGENT_WOW_WORLD_IMAGE:-acore/ac-wotlk-worldserver:master}
+    platform: linux/amd64
+    environment: *game-env
+    stdin_open: true
+    tty: true
+    ports:
+      - 127.0.0.1:8085:8085
+    volumes:
+      - configuration:/azerothcore/env/dist/etc
+      - client-data:/azerothcore/env/dist/data:ro
+    healthcheck:
+      test: [CMD, bash, -c, 'exec 3<>/dev/tcp/127.0.0.1/8085']
+      interval: 5s
+      timeout: 3s
+      retries: 360
+    depends_on:
+      authserver:
+        condition: service_healthy
+      database:
+        condition: service_healthy
+      db-import:
+        condition: service_completed_successfully
+      client-data:
+        condition: service_completed_successfully
+volumes:
+  database:
+  configuration:
+  client-data:

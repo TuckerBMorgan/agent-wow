@@ -7,3 +7,5 @@
 !docker/prepare_wow_account.py
 !docker/run_batch_job.py
 !docker/run_agent.py
+!docker/compose.yaml
+!docker/start-agent-workspace.sh
