@@ -34,7 +34,7 @@ def load_wrapper():
 
 
 WRAPPER = load_wrapper()
-FAKE_KEY = 'unit-test-only-api-key-not-a-real-credential'
+FAKE_KEY = 'unit-test-only-oauth-token-not-a-real-credential'
 
 
 class FakeS3:
@@ -51,7 +51,7 @@ class BatchJobTests(unittest.TestCase):
     def setUp(self):
         # Never inherit real credentials or inspect the caller's credential files.
         self.addCleanup(mock.patch.stopall)
-        mock.patch.dict(os.environ, {'CODEX_API_KEY': FAKE_KEY}, clear=True).start()
+        mock.patch.dict(os.environ, {'CODEX_AUTH_JSON': json.dumps({'auth_mode': 'chatgpt', 'tokens': {'access_token': FAKE_KEY}})}, clear=True).start()
         self.directory = tempfile.TemporaryDirectory(prefix='agent-wow-batch-test-')
         self.addCleanup(self.directory.cleanup)
         self.workspace = Path(self.directory.name) / 'workspace'
@@ -81,11 +81,11 @@ class BatchJobTests(unittest.TestCase):
             self.results.status('running')
         self.assertEqual(self.statuses()[-1]['reasoning_effort_override'], 'high')
 
-    def test_exports_only_reports_and_journal_and_redacts_exact_api_key(self):
+    def test_exports_only_reports_and_journal_and_redacts_login_token(self):
         self.write('journal/quest.json', b'{"turn_in_confirmed": true}')
         self.write('logs/agent/run/final-report.txt', b'finished')
         self.write('logs/agent/run/agent.log', b'before ' + FAKE_KEY.encode() + b' after')
-        self.write('config/codex.env', FAKE_KEY.encode())
+        self.write('config/private-login.json', FAKE_KEY.encode())
         self.write('.codex/auth.json', b'private login')
         self.write('server/.env', b'private database password')
 
@@ -100,42 +100,6 @@ class BatchJobTests(unittest.TestCase):
                          b'before [REDACTED] after')
         self.assertTrue(all(call['Bucket'] == 'test-results' for call in self.client.calls))
         self.assertNotIn(FAKE_KEY.encode(), b''.join(self.client.objects.values()))
-
-    def test_loads_only_the_selected_provider_secret(self):
-        for provider, key_name, arn in (
-            ('openai', 'CODEX_API_KEY', 'fake-openai-secret'),
-            ('openrouter', 'OPENROUTER_API_KEY', 'fake-openrouter-secret'),
-        ):
-            with self.subTest(provider=provider):
-                secrets = mock.Mock()
-                secrets.get_secret_value.return_value = {'SecretString': FAKE_KEY}
-                environment = {
-                    'AWS_RESULTS_BUCKET': 'test-results', 'AWS_BATCH_JOB_ID': 'test-job',
-                    'CODEX_MODEL_PROVIDER': provider, 'CODEX_MODEL': 'test-model',
-                    'CODEX_SECRET_ARN': 'fake-openai-secret',
-                    'OPENROUTER_SECRET_ARN': 'fake-openrouter-secret',
-                }
-                with mock.patch.dict(os.environ, environment, clear=True), \
-                     mock.patch.object(WRAPPER.boto3, 'client', side_effect=[secrets, self.client]), \
-                     mock.patch.object(WRAPPER, 'run', return_value=0):
-                    self.assertEqual(WRAPPER.main(), 0)
-                    self.assertEqual(os.environ[key_name], FAKE_KEY)
-                    other_key = 'OPENROUTER_API_KEY' if provider == 'openai' else 'CODEX_API_KEY'
-                    self.assertNotIn(other_key, os.environ)
-                secrets.get_secret_value.assert_called_once_with(SecretId=arn)
-
-    def test_deepseek_supervisor_uses_openrouter_and_records_its_harness(self):
-        environment = {'AGENT_WOW_HARNESS': 'deepseek', 'DEEPSEEK_MODEL': 'deepseek/test',
-                       'DEEPSEEK_EFFORT': 'high', 'OPENROUTER_API_KEY': FAKE_KEY,
-                       'AWS_RESULTS_BUCKET': 'test-results', 'AWS_BATCH_JOB_ID': 'test-job'}
-        with mock.patch.dict(os.environ, environment, clear=True), \
-             mock.patch.object(WRAPPER.boto3, 'client', return_value=self.client), \
-             mock.patch.object(WRAPPER, 'run', return_value=0):
-            self.assertEqual(WRAPPER.main(), 0)
-            self.results.status('running')
-        self.assertEqual(self.statuses()[-1]['harness'], 'deepseek')
-        self.assertEqual(self.statuses()[-1]['model_override'], 'deepseek/test')
-        self.assertEqual(self.statuses()[-1]['provider'], 'openrouter')
 
     def test_skips_symlink_files_directories_and_fifo(self):
         outside = Path(self.directory.name) / 'private'
@@ -153,7 +117,7 @@ class BatchJobTests(unittest.TestCase):
         self.assertEqual(set(self.client.objects), {'runs/test-job/journal/real.txt'})
 
     def test_subscription_uses_injected_token_and_redacts_exported_logs(self):
-        environment = {'AGENT_WOW_HARNESS':'claude','CLAUDE_AUTH_MODE':'subscription',
+        environment = {'AGENT_WOW_HARNESS':'claude',
                        'CLAUDE_MODEL':'claude-opus-5-5','CLAUDE_EFFORT':'medium',
                        'CLAUDE_CODE_OAUTH_TOKEN':FAKE_KEY,
                        'AWS_RESULTS_BUCKET':'test-results','AWS_BATCH_JOB_ID':'test-job'}
@@ -184,8 +148,7 @@ class BatchJobTests(unittest.TestCase):
     def test_codex_account_uses_injected_login_and_redacts_each_oauth_token(self):
         auth = {'auth_mode': 'chatgpt', 'tokens': {'access_token': 'fake-access',
                 'refresh_token': 'fake-refresh', 'id_token': 'fake-id'}}
-        environment = {'CODEX_AUTH_MODE': 'subscription', 'CODEX_MODEL_PROVIDER': 'openai',
-                       'CODEX_AUTH_JSON': json.dumps(auth), 'CODEX_SECRET_ARN': 'unused-api-secret',
+        environment = {'AGENT_WOW_HARNESS': 'codex', 'CODEX_AUTH_JSON': json.dumps(auth),
                        'AWS_RESULTS_BUCKET': 'test-results', 'AWS_BATCH_JOB_ID': 'test-job'}
         with mock.patch.dict(os.environ, environment, clear=True), \
                 mock.patch.object(WRAPPER.boto3, 'client', return_value=self.client) as clients, \
@@ -346,7 +309,7 @@ class BatchJobTests(unittest.TestCase):
         self.assertIn('runs/test-job/journal/progress.txt', self.client.objects)
         self.assertEqual(self.statuses()[-1]['state'], 'interrupted')
 
-    def test_batch_without_key_fails_before_creating_aws_client(self):
+    def test_batch_without_account_login_fails_before_creating_aws_client(self):
         with mock.patch.dict(os.environ, {
             'AWS_BATCH_JOB_ID': 'test-job', 'AWS_RESULTS_BUCKET': 'test-results',
         }, clear=True), mock.patch.object(WRAPPER.boto3, 'client') as client:

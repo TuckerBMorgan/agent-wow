@@ -1,16 +1,10 @@
 # Only the Dockerfile and container runtime helpers enter the build context.
 **
 !Dockerfile
-!Dockerfile.deepseek
-!Dockerfile.claude-subscription
-!Dockerfile.codex-subscription
-!Dockerfile.viewer
 !.dockerignore
 !docker/
 !docker/prepare_wow_account.py
 !docker/prepare_viewer.py
 !docker/run_batch_job.py
-!docker/run_deepseek.py
 !docker/run_claude.py
-!docker/run_codex_subscription.py
-!docker/codex_openrouter_cache.py
+!docker/run_codex.py

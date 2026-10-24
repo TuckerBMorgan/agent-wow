@@ -16,8 +16,6 @@ dnf install -y docker git
 systemctl start docker
 mkdir -p /build
 cd /build
-aws s3 cp "s3://$BUCKET/$BUILD_PREFIX/context.tar.gz" context.tar.gz
-tar xzf context.tar.gz
 aws ecr get-login-password | docker login --username AWS --password-stdin "${WORLD_IMAGE%%/*}"
 repository=${WORLD_IMAGE#*/}
 repository=${repository%:*}
@@ -33,5 +31,3 @@ git -C core/modules/mod-watch checkout --detach FETCH_HEAD
 docker build --target worldserver --build-arg CTYPE=Release --build-arg CTOOLS=0 -f core/apps/docker/Dockerfile -t "$WORLD_IMAGE" core
 docker push "$WORLD_IMAGE"
 fi
-docker build -f Dockerfile.viewer -t "$VIEWER_IMAGE" .
-docker push "$VIEWER_IMAGE"

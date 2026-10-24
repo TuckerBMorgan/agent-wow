@@ -5,9 +5,7 @@
 #   tofu apply
 # Apply creates infrastructure only. Before submitting a job:
 #   1. Build this Dockerfile for linux/amd64 and push it to image_uri below.
-#   2. For OpenRouter, save OPENROUTER_API_KEY in config/openrouter.env, then run
-#      python3 upload-openrouter-key.py.
-#      Keys are uploaded outside OpenTofu so they never enter its state or plan.
+#   2. Populate the account login secrets outside OpenTofu so they never enter its state.
 #   3. Run the submit_job command printed by tofu output.
 # Use a new image_tag for each new image build; apply then registers that version.
 # Commit and push application changes to your fork before build_and_push: the
@@ -41,24 +39,6 @@ variable "image_tag" {
     condition     = can(regex("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$", var.image_tag)) && var.image_tag != "latest"
     error_message = "Use a valid, unique image tag instead of latest (for example, build-001)."
   }
-}
-
-variable "claude_image_tag" {
-  description = "Existing native Claude Code image in the same ECR repository."
-  type        = string
-  default     = "build-claude-20261021T221539Z"
-}
-
-variable "deepseek_image_tag" {
-  description = "Native DeepSeek Harness image in the same ECR repository."
-  type        = string
-  default     = "build-deepseek-20261022T193042Z"
-}
-
-variable "claude_subscription_image_tag" {
-  description = "Claude Code image using subscription authentication for comparison runs."
-  type        = string
-  default     = "build-claude-subscription-20261023T174500Z"
 }
 
 variable "job_timeout_seconds" {
@@ -136,16 +116,10 @@ resource "aws_ecr_repository" "agent" {
   }
 }
 
-# Only the empty secret is managed here. Never add a secret_version with the key.
-resource "aws_secretsmanager_secret" "codex" {
-  name_prefix             = "agent-wow-codex-"
-  description             = "Raw CODEX_API_KEY supplied to AWS Batch jobs"
-  recovery_window_in_days = 7
-}
-
-resource "aws_secretsmanager_secret" "openrouter" {
-  name_prefix             = "agent-wow-openrouter-"
-  description             = "Raw OPENROUTER_API_KEY loaded by OpenRouter jobs at startup"
+# Only empty secrets are managed here. Login data never enters OpenTofu state.
+resource "aws_secretsmanager_secret" "codex_subscription" {
+  name_prefix             = "agent-wow-codex-subscription-"
+  description             = "Codex ChatGPT login cache; populated outside OpenTofu"
   recovery_window_in_days = 7
 }
 
@@ -251,21 +225,13 @@ resource "aws_iam_role_policy" "execution" {
         Effect   = "Allow"
         Action   = ["logs:CreateLogStream", "logs:PutLogEvents"]
         Resource = "${aws_cloudwatch_log_group.agent.arn}:*"
+      },
+      {
+        Effect = "Allow", Action = ["secretsmanager:GetSecretValue"]
+        Resource = [aws_secretsmanager_secret.codex_subscription.arn,
+        aws_secretsmanager_secret.claude_subscription.arn]
       }
     ]
-  })
-}
-
-# ECS injects the token at startup. The gameplay job role cannot retrieve it.
-resource "aws_iam_role_policy" "claude_subscription_execution" {
-  role = aws_iam_role.execution.id
-  policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect   = "Allow"
-      Action   = ["secretsmanager:GetSecretValue"]
-      Resource = aws_secretsmanager_secret.claude_subscription.arn
-    }]
   })
 }
 
@@ -283,11 +249,6 @@ resource "aws_iam_role_policy" "job" {
         Effect   = "Allow"
         Action   = ["s3:PutObject"]
         Resource = "${aws_s3_bucket.results.arn}/runs/*"
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["secretsmanager:GetSecretValue"]
-        Resource = [aws_secretsmanager_secret.codex.arn, aws_secretsmanager_secret.openrouter.arn]
       }
     ]
   })
@@ -365,18 +326,14 @@ resource "aws_batch_job_queue" "test" {
   }
 }
 
-# Codex uses OpenRouter by default. The supervisor loads only the selected API key.
-resource "aws_batch_job_definition" "agent" {
-  name                  = "agent-wow"
-  type                  = "container"
-  platform_capabilities = ["EC2"]
-  retry_strategy {
-    attempts = 1
-  }
-  timeout {
-    attempt_duration_seconds = var.job_timeout_seconds
-  }
-  container_properties = jsonencode({
+# Both harnesses use the same game image, resources, logging, and result storage.
+# ECS supplies only the selected account login; the gameplay role cannot fetch it.
+locals {
+  job_environment = [
+    { name = "AWS_DEFAULT_REGION", value = var.aws_region },
+    { name = "AWS_RESULTS_BUCKET", value = aws_s3_bucket.results.id }
+  ]
+  job_container = {
     image            = local.image_uri
     command          = ["run-wow-agent"]
     privileged       = true
@@ -386,15 +343,6 @@ resource "aws_batch_job_definition" "agent" {
       { type = "VCPU", value = "8" },
       { type = "MEMORY", value = "28672" }
     ]
-    environment = [
-      { name = "AWS_DEFAULT_REGION", value = var.aws_region },
-      { name = "AWS_RESULTS_BUCKET", value = aws_s3_bucket.results.id },
-      { name = "CODEX_MODEL_PROVIDER", value = "openrouter" },
-      { name = "CODEX_MODEL", value = "openai/gpt-6.1-sol" },
-      { name = "CODEX_REASONING_EFFORT", value = "high" },
-      { name = "CODEX_SECRET_ARN", value = aws_secretsmanager_secret.codex.arn },
-      { name = "OPENROUTER_SECRET_ARN", value = aws_secretsmanager_secret.openrouter.arn }
-    ]
     logConfiguration = {
       logDriver = "awslogs"
       options = {
@@ -403,47 +351,23 @@ resource "aws_batch_job_definition" "agent" {
         "awslogs-stream-prefix" = "agent-wow"
       }
     }
-  })
-  depends_on = [aws_iam_role_policy.execution, aws_iam_role_policy.job]
+  }
 }
 
-# Native Claude Code shares the queue, compute pool, results bucket and OpenRouter key.
-resource "aws_batch_job_definition" "claude" {
-  name                  = "agent-wow-claude"
+resource "aws_batch_job_definition" "codex_subscription" {
+  name                  = "agent-wow-codex-subscription"
   type                  = "container"
   platform_capabilities = ["EC2"]
-  retry_strategy {
-    attempts = 1
-  }
-  timeout {
-    attempt_duration_seconds = var.job_timeout_seconds
-  }
-  container_properties = jsonencode({
-    image            = "${aws_ecr_repository.agent.repository_url}:${var.claude_image_tag}"
-    command          = ["run-wow-agent"]
-    privileged       = true
-    jobRoleArn       = aws_iam_role.job.arn
-    executionRoleArn = aws_iam_role.execution.arn
-    resourceRequirements = [
-      { type = "VCPU", value = "8" },
-      { type = "MEMORY", value = "28672" }
-    ]
-    environment = [
-      { name = "AWS_DEFAULT_REGION", value = var.aws_region },
-      { name = "AWS_RESULTS_BUCKET", value = aws_s3_bucket.results.id },
-      { name = "CLAUDE_MODEL", value = "anthropic/claude-opus-5.5" },
-      { name = "CLAUDE_EFFORT", value = "medium" },
-      { name = "OPENROUTER_SECRET_ARN", value = aws_secretsmanager_secret.openrouter.arn }
-    ]
-    logConfiguration = {
-      logDriver = "awslogs"
-      options = {
-        "awslogs-group"         = aws_cloudwatch_log_group.agent.name
-        "awslogs-region"        = var.aws_region
-        "awslogs-stream-prefix" = "agent-wow"
-      }
-    }
-  })
+  retry_strategy { attempts = 1 }
+  timeout { attempt_duration_seconds = var.job_timeout_seconds }
+  container_properties = jsonencode(merge(local.job_container, {
+    environment = concat(local.job_environment, [
+      { name = "AGENT_WOW_HARNESS", value = "codex" },
+      { name = "CODEX_MODEL", value = "gpt-6.1-sol" },
+      { name = "CODEX_REASONING_EFFORT", value = "medium" }
+    ])
+    secrets = [{ name = "CODEX_AUTH_JSON", valueFrom = aws_secretsmanager_secret.codex_subscription.arn }]
+  }))
   depends_on = [aws_iam_role_policy.execution, aws_iam_role_policy.job]
 }
 
@@ -451,84 +375,16 @@ resource "aws_batch_job_definition" "claude_subscription" {
   name                  = "agent-wow-claude-subscription"
   type                  = "container"
   platform_capabilities = ["EC2"]
-  retry_strategy {
-    attempts = 1
-  }
-  timeout {
-    attempt_duration_seconds = var.job_timeout_seconds
-  }
-  container_properties = jsonencode({
-    image            = "${aws_ecr_repository.agent.repository_url}:${var.claude_subscription_image_tag}"
-    command          = ["run-wow-agent"]
-    privileged       = true
-    jobRoleArn       = aws_iam_role.job.arn
-    executionRoleArn = aws_iam_role.execution.arn
-    resourceRequirements = [
-      { type = "VCPU", value = "8" },
-      { type = "MEMORY", value = "28672" }
-    ]
-    environment = [
-      { name = "AWS_DEFAULT_REGION", value = var.aws_region },
-      { name = "AWS_RESULTS_BUCKET", value = aws_s3_bucket.results.id },
+  retry_strategy { attempts = 1 }
+  timeout { attempt_duration_seconds = var.job_timeout_seconds }
+  container_properties = jsonencode(merge(local.job_container, {
+    environment = concat(local.job_environment, [
       { name = "AGENT_WOW_HARNESS", value = "claude" },
-      { name = "CLAUDE_AUTH_MODE", value = "subscription" },
       { name = "CLAUDE_MODEL", value = "claude-opus-5-5" },
       { name = "CLAUDE_EFFORT", value = "medium" }
-    ]
-    secrets = [{
-      name      = "CLAUDE_CODE_OAUTH_TOKEN"
-      valueFrom = aws_secretsmanager_secret.claude_subscription.arn
-    }]
-    logConfiguration = {
-      logDriver = "awslogs"
-      options = {
-        "awslogs-group"         = aws_cloudwatch_log_group.agent.name
-        "awslogs-region"        = var.aws_region
-        "awslogs-stream-prefix" = "agent-wow"
-      }
-    }
-  })
-  depends_on = [aws_iam_role_policy.execution, aws_iam_role_policy.job,
-  aws_iam_role_policy.claude_subscription_execution]
-}
-
-resource "aws_batch_job_definition" "deepseek" {
-  name                  = "agent-wow-deepseek"
-  type                  = "container"
-  platform_capabilities = ["EC2"]
-  retry_strategy {
-    attempts = 1
-  }
-  timeout {
-    attempt_duration_seconds = var.job_timeout_seconds
-  }
-  container_properties = jsonencode({
-    image            = "${aws_ecr_repository.agent.repository_url}:${var.deepseek_image_tag}"
-    command          = ["run-wow-agent"]
-    privileged       = true
-    jobRoleArn       = aws_iam_role.job.arn
-    executionRoleArn = aws_iam_role.execution.arn
-    resourceRequirements = [
-      { type = "VCPU", value = "8" },
-      { type = "MEMORY", value = "28672" }
-    ]
-    environment = [
-      { name = "AWS_DEFAULT_REGION", value = var.aws_region },
-      { name = "AWS_RESULTS_BUCKET", value = aws_s3_bucket.results.id },
-      { name = "AGENT_WOW_HARNESS", value = "deepseek" },
-      { name = "DEEPSEEK_MODEL", value = "deepseek/deepseek-v4.1-flash-1017" },
-      { name = "DEEPSEEK_EFFORT", value = "high" },
-      { name = "OPENROUTER_SECRET_ARN", value = aws_secretsmanager_secret.openrouter.arn }
-    ]
-    logConfiguration = {
-      logDriver = "awslogs"
-      options = {
-        "awslogs-group"         = aws_cloudwatch_log_group.agent.name
-        "awslogs-region"        = var.aws_region
-        "awslogs-stream-prefix" = "agent-wow"
-      }
-    }
-  })
+    ])
+    secrets = [{ name = "CLAUDE_CODE_OAUTH_TOKEN", valueFrom = aws_secretsmanager_secret.claude_subscription.arn }]
+  }))
   depends_on = [aws_iam_role_policy.execution, aws_iam_role_policy.job]
 }
 
@@ -542,13 +398,8 @@ output "image_uri" {
   description = "Push a linux/amd64 build here before submitting the job."
   value       = local.image_uri
 }
-output "codex_secret_arn" {
-  description = "Store the raw API key here outside OpenTofu before submitting a job."
-  value       = aws_secretsmanager_secret.codex.arn
-}
-output "openrouter_secret_arn" {
-  description = "Store the raw OpenRouter API key here outside OpenTofu before submitting an OpenRouter job."
-  value       = aws_secretsmanager_secret.openrouter.arn
+output "codex_subscription_secret_arn" {
+  value = aws_secretsmanager_secret.codex_subscription.arn
 }
 output "job_queue" {
   value = aws_batch_job_queue.agent.name
@@ -556,17 +407,11 @@ output "job_queue" {
 output "test_job_queue" {
   value = aws_batch_job_queue.test.name
 }
-output "job_definition" {
-  value = aws_batch_job_definition.agent.arn
-}
-output "claude_job_definition" {
-  value = aws_batch_job_definition.claude.arn
-}
-output "deepseek_job_definition" {
-  value = aws_batch_job_definition.deepseek.arn
-}
-output "claude_subscription_job_definition" {
-  value = aws_batch_job_definition.claude_subscription.arn
+output "job_definitions" {
+  value = {
+    codex  = aws_batch_job_definition.codex_subscription.arn
+    claude = aws_batch_job_definition.claude_subscription.arn
+  }
 }
 output "claude_subscription_secret_arn" {
   description = "Populate with the subscription token outside OpenTofu."
@@ -580,7 +425,7 @@ output "log_group" {
 }
 output "submit_job" {
   description = "Each invocation starts a fresh run; apply alone never submits a job."
-  value       = "aws batch submit-job --region ${var.aws_region} --job-name agent-wow --job-queue ${aws_batch_job_queue.agent.name} --job-definition ${aws_batch_job_definition.agent.arn}"
+  value       = "aws batch submit-job --region ${var.aws_region} --job-name agent-wow --job-queue ${aws_batch_job_queue.agent.name} --job-definition ${aws_batch_job_definition.codex_subscription.arn}"
 }
 
 output "build_and_push" {
