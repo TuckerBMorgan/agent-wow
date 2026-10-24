@@ -99,21 +99,19 @@ def follow(job_id, region, log_group, poll_seconds=5, final_wait_seconds=15):
     last_status = stream = token = terminal_at = None
     missing_polls = 0
     while True:
-        response = aws(
+        job = aws(
             region, 'batch', 'describe-jobs', '--jobs', job_id, '--query',
-            '{jobs: jobs[].{status:status,statusReason:statusReason,'
-            'container:{logStreamName:container.logStreamName,'
-            'exitCode:container.exitCode,reason:container.reason}}}',
+            'jobs[0].{status:status,statusReason:statusReason,'
+            'logStreamName:container.logStreamName,'
+            'exitCode:container.exitCode,reason:container.reason}',
         )
-        jobs = response.get('jobs', [])
-        if not jobs:
+        if not job:
             missing_polls += 1
             if missing_polls >= 6:
                 raise AwsError(f'Job {job_id} was not found in {region}.')
             time.sleep(poll_seconds)
             continue
         missing_polls = 0
-        job = jobs[0]
         status = job['status']
         if status != last_status:
             print(f'Status: {status}', flush=True)
@@ -121,8 +119,7 @@ def follow(job_id, region, log_group, poll_seconds=5, final_wait_seconds=15):
         terminal = status in ('SUCCEEDED', 'FAILED')
         if terminal and terminal_at is None:
             terminal_at = time.monotonic()
-        container = job.get('container') or {}
-        new_stream = container.get('logStreamName')
+        new_stream = job.get('logStreamName')
         if new_stream and new_stream != stream:
             stream, token = new_stream, None
             if terminal:
@@ -137,10 +134,10 @@ def follow(job_id, region, log_group, poll_seconds=5, final_wait_seconds=15):
         if terminal and caught_up and (
             time.monotonic() - terminal_at >= final_wait_seconds
         ):
-            exit_code = container.get('exitCode')
+            exit_code = job.get('exitCode')
             suffix = f' (container exit {exit_code})' if exit_code is not None else ''
             print(f'Job {status}{suffix}.', flush=True)
-            for reason in dict.fromkeys([job.get('statusReason'), container.get('reason')]):
+            for reason in dict.fromkeys([job.get('statusReason'), job.get('reason')]):
                 if reason:
                     print(reason, flush=True)
             return 0 if status == 'SUCCEEDED' else 1
@@ -233,15 +230,12 @@ def main():
         message = f'Stopped watching {job_id}. The AWS job was not cancelled.' if job_id else 'Stopped.'
         print('\n' + message, flush=True)
         return 130
-    except AwsError as error:
+    except (AwsError, OSError, sqlite3.Error, subprocess.CalledProcessError) as error:
         if job_id:
             print(f'Watching stopped: {error}\nJob {job_id} was not cancelled.', file=sys.stderr)
         else:
             print(f'Launch failed: {error}', file=sys.stderr)
-        return error.returncode
-    except (OSError, sqlite3.Error, subprocess.CalledProcessError) as error:
-        print(f'Launch failed: {error}', file=sys.stderr)
-        return error.returncode if isinstance(error, subprocess.CalledProcessError) else 1
+        return getattr(error, 'returncode', 1)
     except ValueError as error:
         parser.error(str(error))
 

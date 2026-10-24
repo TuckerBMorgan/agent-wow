@@ -5,6 +5,7 @@ import importlib.util
 import io
 from pathlib import Path
 import subprocess
+import sqlite3
 import sys
 import unittest
 from unittest import mock
@@ -26,12 +27,7 @@ def option(args, name, default=None):
 
 
 def job(status, stream=None, reason=None):
-    result = {'jobId': JOB_ID, 'status': status, 'container': {}}
-    if stream:
-        result['container']['logStreamName'] = stream
-    if reason:
-        result['statusReason'] = reason
-    return {'jobs': [result]}
+    return {'status': status, 'logStreamName': stream, 'statusReason': reason}
 
 
 class Clock:
@@ -64,7 +60,7 @@ class WatchJobTests(unittest.TestCase):
         return result, output.getvalue(), call.call_args_list, clock
 
     def test_queued_job_waits_for_own_stream_and_drains_delayed_final_logs(self):
-        states = iter([job('RUNNABLE'), job('RUNNABLE'), job('RUNNING', STREAM)])
+        states = iter([None, job('RUNNABLE'), job('RUNNABLE'), job('RUNNING', STREAM)])
 
         def api(clock, region, *args):
             self.assertEqual(region, REGION)
@@ -90,6 +86,15 @@ class WatchJobTests(unittest.TestCase):
         self.assertEqual(output.count('delayed final report'), 1)
         self.assertGreaterEqual(clock.now, 5)
         self.assertTrue(calls)
+
+    def test_missing_job_stops_after_bounded_polls(self):
+        calls = []
+        def api(clock, region, *args):
+            calls.append(args)
+            return None
+        with self.assertRaisesRegex(watcher.AwsError, 'was not found'):
+            self.follow(api)
+        self.assertEqual(len(calls), 6)
 
     def test_stream_change_discards_the_previous_stream_token(self):
         new_stream = STREAM + '-retry'
@@ -244,13 +249,19 @@ class WatchJobTests(unittest.TestCase):
                 run.assert_called_once()
                 sleep.assert_not_called()
 
-    def test_main_reports_aws_errors_and_nonzero_exit(self):
-        output = io.StringIO()
-        with mock.patch.object(sys, 'argv', ['launch.py', '--watch', JOB_ID]):
-            with mock.patch.object(watcher, 'follow', side_effect=watcher.AwsError('AccessDenied: view job')):
+    def test_main_reports_watcher_errors_and_preserves_exit_codes(self):
+        errors = [(watcher.AwsError('AccessDenied: view job', 254), 254),
+                  (OSError('Broken output'), 1), (sqlite3.Error('Database unavailable'), 1),
+                  (subprocess.CalledProcessError(7, ['test-command']), 7)]
+        for error, expected in errors:
+            output = io.StringIO()
+            with self.subTest(error=type(error).__name__), \
+                 mock.patch.object(sys, 'argv', ['launch.py', '--watch', JOB_ID]), \
+                 mock.patch.object(watcher, 'follow', side_effect=error):
                 with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
-                    self.assertEqual(watcher.main(), 1)
-        self.assertIn('AccessDenied', output.getvalue())
+                    self.assertEqual(watcher.main(), expected)
+            self.assertIn(str(error), output.getvalue())
+            self.assertIn(f'Job {JOB_ID} was not cancelled', output.getvalue())
 
     def test_ctrl_c_stops_watching_without_cancelling_job(self):
         output = io.StringIO()
