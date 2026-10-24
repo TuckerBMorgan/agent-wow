@@ -4,46 +4,15 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
-import json
-import math
-import os
-from pathlib import Path
 import shutil
 import sys
 import time
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
 
 from launch import AwsError, aws_request
 
 
 STATES = ('SUBMITTED', 'PENDING', 'RUNNABLE', 'STARTING', 'RUNNING')
 COLORS = {'RUNNING': '32', 'STARTING': '36'}
-OPENROUTER_ENV = Path(__file__).resolve().parent / 'config/openrouter.env'
-
-
-def openrouter_credits():
-    # Read the local key as data; never source the file or print HTTP error bodies.
-    try:
-        key = os.environ.get('OPENROUTER_API_KEY', '').strip()
-        if not key and OPENROUTER_ENV.is_file():
-            values = [line.partition('=')[2].strip() for line in OPENROUTER_ENV.read_text().splitlines()
-                      if line.partition('=')[0].strip() == 'OPENROUTER_API_KEY']
-            key = values[0] if len(values) == 1 else ''
-        if not key:
-            return 'not configured (config/openrouter.env)'
-        request = Request('https://openrouter.ai/api/v1/credits',
-                          headers={'Authorization': f'Bearer {key}'})
-        with urlopen(request, timeout=5) as response:
-            data = json.load(response)['data']
-        remaining = float(data['total_credits']) - float(data['total_usage'])
-        if not math.isfinite(remaining):
-            raise ValueError
-        return f'${remaining:,.2f}'
-    except HTTPError as error:
-        return f'unavailable (HTTP {error.code})'
-    except (OSError, ValueError, KeyError, TypeError):
-        return 'unavailable (lookup failed)'
 
 
 def active_jobs(region):
@@ -58,7 +27,7 @@ def active_jobs(region):
     return sorted(jobs.values(), key=lambda job: (-STATES.index(job['status']), job['created']))
 
 
-def dashboard(jobs, region, interval, color=False, credits='not checked'):
+def dashboard(jobs, region, interval, color=False):
     width = shutil.get_terminal_size((100, 24)).columns
     id_width = 36 if width >= 110 else 8
     name_width = max(16, min(45, width - id_width - 27))
@@ -68,7 +37,6 @@ def dashboard(jobs, region, interval, color=False, credits='not checked'):
     lines = [
         'AGENT WOW  |  AWS Batch',
         f'{running} running   {starting} starting   {queued} queued',
-        f'OpenRouter credits: {credits}',
         '',
         f' {"STATUS":<10} {"JOB":<{name_width}} {"AGE":>8}  JOB ID',
         ' ' + '─' * (name_width + id_width + 23),
@@ -99,19 +67,15 @@ def main():
     if args.interval < 1:
         parser.error('--interval must be at least 1 second.')
     terminal = sys.stdout.isatty()
-    credits, next_credit_refresh = 'not checked', 0
     try:
         if terminal:
             print('\033[?25l', end='', flush=True)
         while True:
-            if time.monotonic() >= next_credit_refresh:
-                credits = openrouter_credits()
-                next_credit_refresh = time.monotonic() + 30
             try:
                 screen = dashboard(active_jobs(args.region), args.region, args.interval,
-                                   color=terminal, credits=credits)
+                                   color=terminal)
             except AwsError as error:
-                screen = (f'AGENT WOW  |  Could not refresh\nOpenRouter credits: {credits}'
+                screen = ('AGENT WOW  |  Could not refresh'
                           f'\n\n{error}\n\nRetrying in {args.interval}s. Ctrl+C exits.')
             print(('\033[H\033[2J' if terminal else '') + screen, flush=True)
             time.sleep(args.interval)

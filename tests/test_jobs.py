@@ -29,18 +29,18 @@ class JobHistoryTests(unittest.TestCase):
     def test_submission_records_exact_prompt_and_settings_without_secrets(self):
         prompt = 'Create "Orc"; don\'t evaluate $(anything).\nAnother line.'
         overrides = {'command': ['run-wow-agent', prompt], 'environment': [
-            {'name': 'CODEX_MODEL_PROVIDER', 'value': 'openrouter'},
-            {'name': 'CODEX_MODEL', 'value': 'anthropic/test'},
+            {'name': 'AGENT_WOW_HARNESS', 'value': 'codex'},
+            {'name': 'CODEX_MODEL', 'value': 'gpt-test'},
             {'name': 'CODEX_REASONING_EFFORT', 'value': 'high'},
-            {'name': 'OPENROUTER_API_KEY', 'value': 'fake-secret-must-not-persist'},
+            {'name': 'CODEX_AUTH_JSON', 'value': 'fake-secret-must-not-persist'},
         ]}
         with mock.patch.object(launch, 'aws_request', return_value={'jobId': 'one'}) as api:
             launch.submit_job('test-region', 'test-job', 'test-definition:1', overrides)
         self.assertEqual(api.call_count, 1)
         row, = self.rows()
         self.assertEqual(row['prompt'], prompt)
-        self.assertEqual(row['provider'], 'openrouter')
-        self.assertEqual(row['model'], 'anthropic/test')
+        self.assertEqual(row['provider'], 'codex-subscription')
+        self.assertEqual(row['model'], 'gpt-test')
         self.assertEqual(row['effort'], 'high')
         self.assertEqual(row['region'], 'test-region')
         self.assertEqual(row['status'], 'SUBMITTED')
@@ -55,16 +55,6 @@ class JobHistoryTests(unittest.TestCase):
         self.assertEqual(api.call_count, 1)
         self.assertEqual(self.rows(), [])
 
-    def test_native_deepseek_submission_records_its_model_and_effort(self):
-        with mock.patch.dict(launch.os.environ, {}, clear=True):
-            overrides = launch.container_overrides('Full orc warrior task', 'deepseek')
-        with mock.patch.object(launch, 'aws_request', return_value={'jobId': 'deepseek-job'}):
-            launch.submit_job('test-region', 'deepseek-test', 'agent-wow-deepseek:1', overrides)
-        row, = self.rows()
-        self.assertEqual(row['model'], 'deepseek/deepseek-v4.1-flash-1017')
-        self.assertEqual(row['effort'], 'high')
-        self.assertEqual(row['provider'], 'openrouter')
-
     def test_database_failure_before_submission_prevents_launch(self):
         with mock.patch.object(launch, 'database', side_effect=sqlite3.OperationalError('read only')):
             with mock.patch.object(launch, 'aws_request') as api:
@@ -72,9 +62,9 @@ class JobHistoryTests(unittest.TestCase):
                     launch.submit_job('test-region', 'test-job', 'test-definition', {})
         api.assert_not_called()
 
-    def test_subscription_history_is_distinguished_from_openrouter_billing(self):
+    def test_subscription_history_records_account_billing(self):
         with mock.patch.dict(launch.os.environ, {}, clear=True):
-            overrides=launch.container_overrides('Orc warrior task','claude-subscription')
+            overrides=launch.container_overrides('Orc warrior task','claude')
         with mock.patch.object(launch,'aws_request',return_value={'jobId':'subscription-job'}):
             launch.submit_job('test-region','subscription-test','agent-wow-claude-subscription:1',overrides)
         row, = self.rows()
@@ -101,14 +91,14 @@ class JobHistoryTests(unittest.TestCase):
                             self.assertEqual(launch_all.main(), 0)
         rows = self.rows()
         self.assertEqual(len(rows), 2)
-        self.assertEqual({row['job_name'] for row in rows}, {'agent-wow-orc-warrior', 'agent-wow-orc-hunter'})
+        self.assertEqual({row['job_name'] for row in rows}, {'agent-wow-codex-subscription-orc-warrior', 'agent-wow-codex-subscription-orc-hunter'})
         self.assertTrue(all(row['prompt'].startswith('Create one orc ') for row in rows))
 
     def test_claude_matrix_routes_and_records_native_claude_settings(self):
-        environment = {'CLAUDE_MODEL': 'anthropic/claude-opus-5.5', 'CLAUDE_EFFORT': 'medium',
+        environment = {'AGENT_WOW_HARNESS': 'claude', 'CLAUDE_MODEL': 'claude-opus-5-5', 'CLAUDE_EFFORT': 'medium',
                        'CODEX_MODEL': 'must-not-be-recorded'}
         with mock.patch.object(launch_all, 'RACE_CLASSES', {'orc': ('warrior', 'hunter')}), \
-             mock.patch.object(launch_all.sys, 'argv', ['launch_all.py', '--harness', 'claude']), \
+             mock.patch.object(launch_all.sys, 'argv', ['launch_all.py']), \
              mock.patch.dict(launch_all.os.environ, environment, clear=True), \
              mock.patch.object(launch, 'aws_request', side_effect=[{'jobId': 'one'}, {'jobId': 'two'}]) as api, \
              contextlib.redirect_stdout(io.StringIO()):
@@ -116,13 +106,13 @@ class JobHistoryTests(unittest.TestCase):
         self.assertEqual(api.call_count, 2)
         for call in api.call_args_list:
             args = call.args
-            self.assertEqual(args[args.index('--job-definition') + 1], 'agent-wow-claude')
+            self.assertEqual(args[args.index('--job-definition') + 1], 'agent-wow-claude-subscription')
         rows = self.rows()
         self.assertEqual({row['job_name'] for row in rows}, {
-            'agent-wow-claude-orc-warrior', 'agent-wow-claude-orc-hunter',
+            'agent-wow-claude-subscription-orc-warrior', 'agent-wow-claude-subscription-orc-hunter',
         })
-        self.assertTrue(all(row['provider'] == 'openrouter' for row in rows))
-        self.assertTrue(all(row['model'] == 'anthropic/claude-opus-5.5' for row in rows))
+        self.assertTrue(all(row['provider'] == 'claude-subscription' for row in rows))
+        self.assertTrue(all(row['model'] == 'claude-opus-5-5' for row in rows))
         self.assertTrue(all(row['effort'] == 'medium' for row in rows))
         self.assertTrue(all(row['prompt'].startswith('Create one orc ') for row in rows))
 

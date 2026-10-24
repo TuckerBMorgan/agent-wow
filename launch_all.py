@@ -16,13 +16,14 @@ from race_classes import RACE_CLASSES
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--harness', choices=JOB_DEFINITIONS, default='codex')
+    parser.add_argument('--harness', choices=JOB_DEFINITIONS,
+                        default=os.environ.get('AGENT_WOW_HARNESS', 'codex'))
     parser.add_argument('--region', default='us-west-2')
     args = parser.parse_args()
-    name = JOB_DEFINITIONS[args.harness]
-    definition = os.environ.get('WOW_JOB_DEFINITION', name)
     try:
         overrides = container_overrides(None, args.harness)
+        name = JOB_DEFINITIONS[args.harness]
+        definition = os.environ.get('WOW_JOB_DEFINITION', name)
         for race, classes in RACE_CLASSES.items():
             for character_class in classes:
                 prompt = (f'Create one {race.replace("-", " ")} {character_class.replace("-", " ")} '

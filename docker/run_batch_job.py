@@ -10,18 +10,7 @@ import time
 
 import boto3
 from botocore.config import Config
-
-
-def agent_settings():
-    if os.environ.get('AGENT_WOW_HARNESS') == 'claude':
-        provider = 'claude-subscription' if os.environ.get('CLAUDE_AUTH_MODE') == 'subscription' else 'openrouter'
-        return ('claude', provider, os.environ.get('CLAUDE_MODEL'), os.environ.get('CLAUDE_EFFORT'))
-    if os.environ.get('AGENT_WOW_HARNESS') == 'deepseek':
-        return ('deepseek', 'openrouter', os.environ.get('DEEPSEEK_MODEL'), os.environ.get('DEEPSEEK_EFFORT'))
-    provider = ('codex-subscription' if os.environ.get('CODEX_AUTH_MODE') == 'subscription'
-                else os.environ.get('CODEX_MODEL_PROVIDER', 'openai'))
-    return ('codex', provider,
-            os.environ.get('CODEX_MODEL'), os.environ.get('CODEX_REASONING_EFFORT'))
+from agent_common import credential_redactor, harness_spec
 
 
 class Results:
@@ -30,35 +19,22 @@ class Results:
         self.bucket = bucket
         self.prefix = f'runs/{job_id}'
         self.workspace = workspace
-        self.secrets = sorted({
-            value.encode() for name in ('CODEX_API_KEY', 'OPENAI_API_KEY', 'OPENROUTER_API_KEY',
-                                        'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
-                                        'CODEX_AUTH_JSON')
-            if (value := os.environ.get(name))
-        }, key=len, reverse=True)
-        # OAuth tokens must also be redacted individually if a tool prints one.
-        auth = os.environ.get('CODEX_AUTH_JSON')
-        if auth:
-            tokens = json.loads(auth).get('tokens', {})
-            self.secrets = sorted(set(self.secrets) | {
-                value.encode() for value in tokens.values() if isinstance(value, str) and value
-            }, key=len, reverse=True)
+        self.redact = credential_redactor()
         self.uploaded = {}
 
     def put(self, key, data):
-        for secret in self.secrets:
-            data = data.replace(secret, b'[REDACTED]')
-        self.client.put_object(Bucket=self.bucket, Key=f'{self.prefix}/{key}', Body=data)
+        self.client.put_object(Bucket=self.bucket, Key=f'{self.prefix}/{key}', Body=self.redact(data))
 
     def status(self, state, exit_code=None):
-        harness, provider, model, effort = agent_settings()
+        harness = os.environ.get('AGENT_WOW_HARNESS', 'codex')
+        spec = harness_spec(harness)
         self.put('status.json', json.dumps({
             'state': state,
             'process_exit_code': exit_code,
             'harness': harness,
-            'provider': provider,
-            'model_override': model,
-            'reasoning_effort_override': effort,
+            'provider': f'{harness}-subscription',
+            'model_override': os.environ.get(spec['model_env']),
+            'reasoning_effort_override': os.environ.get(spec['effort_env']),
             'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
             'quest_completion': 'Verify server-confirmed turn-ins in journal; exit 0 alone is not proof.',
         }).encode())
@@ -166,31 +142,14 @@ def main():
     if not bucket or not job_id:
         print('Batch requires AWS_RESULTS_BUCKET and AWS_BATCH_JOB_ID.', flush=True)
         return 1
-    _, provider, model, _ = agent_settings()
-    key_name, secret_name = {
-        'openai': ('CODEX_API_KEY', 'CODEX_SECRET_ARN'),
-        'openrouter': ('OPENROUTER_API_KEY', 'OPENROUTER_SECRET_ARN'),
-        'claude-subscription': ('CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_SUBSCRIPTION_SECRET_ARN'),
-        'codex-subscription': ('CODEX_AUTH_JSON', 'CODEX_SUBSCRIPTION_SECRET_ARN'),
-    }.get(provider, (None, None))
-    if key_name is None:
-        print('Unsupported agent authentication provider.', flush=True)
-        return 2
-    if provider == 'openrouter' and not (model or '').strip():
-        print('OpenRouter requires a nonempty model ID.', flush=True)
-        return 2
+    login = harness_spec(os.environ.get('AGENT_WOW_HARNESS', 'codex'))['auth_env']
+    # ECS injects the account login. Jobs never fetch credentials themselves.
+    if not os.environ.get(login, '').strip():
+        print(f'Batch requires a nonempty {login}.', flush=True)
+        return 1
     client_config = Config(
         connect_timeout=3, read_timeout=5, retries={'total_max_attempts': 1},
     )
-    # ARNs are safe job configuration; the key stays in memory and is inherited
-    # only by this job's child process. Local runs can supply the key directly.
-    secret_arn = os.environ.get(secret_name)
-    if not os.environ.get(key_name) and secret_arn:
-        secrets = boto3.client('secretsmanager', config=client_config)
-        os.environ[key_name] = secrets.get_secret_value(SecretId=secret_arn)['SecretString']
-    if not os.environ.get(key_name, '').strip():
-        print(f'Batch requires a nonempty {key_name} for {provider}.', flush=True)
-        return 1
     client = boto3.client('s3', config=client_config)
     results = Results(client, bucket, job_id)
     print(f'Results: s3://{bucket}/runs/{job_id}/', flush=True)

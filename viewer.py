@@ -12,11 +12,10 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import tarfile
 import tempfile
 import time
 
-from launch import aws, container_overrides, submit_job
+from launch import JOB_DEFINITIONS, aws, container_overrides, submit_job
 
 ROOT = Path(__file__).resolve().parent
 REGION = 'us-west-2'
@@ -64,20 +63,14 @@ def build(config):
     if existing:
         raise RuntimeError(f'A worldserver builder already exists: {existing[0]}.')
     prefix = 'viewer/build/' + time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())
-    context = ROOT / 'tmp/viewer-context.tar.gz'
-    with tarfile.open(context, 'w:gz') as archive:
-        for relative in ('Dockerfile.viewer', 'docker/prepare_viewer.py'):
-            archive.add(ROOT / relative, arcname=relative)
-    upload(context, config['results_bucket'], f'{prefix}/context.tar.gz')
-    image = config['viewer_agent_image']
     script = (ROOT / 'viewer/build-worldserver.sh').read_text()
     env = dict(REGION=REGION, BUCKET=config['results_bucket'], BUILD_PREFIX=prefix,
-               WORLD_IMAGE=config['world_watch_image'], VIEWER_IMAGE=image)
+               WORLD_IMAGE=config['world_watch_image'])
     import shlex
     lines = '\n'.join(f'export {key}={shlex.quote(value)}' for key, value in env.items())
     script = script.replace('set -Eeuo pipefail', 'set -Eeuo pipefail\n' + lines, 1)
     instance = start(config['world_build_template'], config['world_build_subnet'], script)
-    state = dict(instance_id=instance, prefix=prefix, world_image=env['WORLD_IMAGE'], agent_image=image)
+    state = dict(instance_id=instance, prefix=prefix, world_image=env['WORLD_IMAGE'])
     (ROOT / 'tmp/viewer-build.json').write_text(json.dumps(state, indent=2) + '\n')
     print(f'Builder {instance}; logs: s3://{env["BUCKET"]}/{prefix}/build.log', flush=True)
 
@@ -163,7 +156,7 @@ def main():
     mode.add_argument('--build', action='store_true')
     mode.add_argument('--launch', action='store_true')
     mode.add_argument('--stop', action='store_true')
-    parser.add_argument('--harness', choices=('codex', 'codex-subscription'), default='codex')
+    parser.add_argument('--harness', choices=JOB_DEFINITIONS, default='codex')
     parser.add_argument('--prompt', default='Create one orc warrior and complete the starting area.')
     args = parser.parse_args()
     (ROOT / 'tmp').mkdir(exist_ok=True)
@@ -182,15 +175,12 @@ def main():
     job_id = args.job_id
     if args.launch:
         wait_ready(instance, config)
-        os.environ.setdefault('CODEX_REASONING_EFFORT', 'medium')
         overrides = container_overrides(args.prompt, args.harness)
-        if args.harness == 'codex-subscription':
-            overrides['environment'] += [
-                {'name': 'AGENT_WOW_VIEWER', 'value': '1'},
-                {'name': 'AGENT_WOW_WORLD_IMAGE', 'value': config['world_watch_image']},
-            ]
-        definition = config['codex_subscription_job_definition' if args.harness == 'codex-subscription'
-                            else 'viewer_job_definition']
+        overrides['environment'] += [
+            {'name': 'AGENT_WOW_VIEWER', 'value': '1'},
+            {'name': 'AGENT_WOW_WORLD_IMAGE', 'value': config['world_watch_image']},
+        ]
+        definition = config['job_definitions'][args.harness]
         job_id = submit_job(REGION, 'agent-wow-viewer-test', definition,
                             overrides, config['viewer_job_queue'])['jobId']
         print(f'Game job: {job_id}', flush=True)

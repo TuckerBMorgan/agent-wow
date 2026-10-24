@@ -1,5 +1,5 @@
 import contextlib
-import importlib.util
+import importlib
 import io
 import json
 import os
@@ -14,29 +14,30 @@ import viewer
 
 
 class ViewerTests(unittest.TestCase):
-    def test_account_run_uses_its_definition_and_enables_the_spectator(self):
-        config = {'codex_subscription_job_definition': 'account-definition',
+    def test_account_runs_enable_the_spectator_with_the_selected_harness(self):
+        config = {'job_definitions': {'codex': 'codex-definition', 'claude': 'claude-definition'},
                   'viewer_job_queue': 'viewer-queue', 'world_watch_image': 'world-image'}
-        with tempfile.TemporaryDirectory() as directory, \
-                patch.object(viewer, 'ROOT', Path(directory)), \
-                patch.object(viewer, 'outputs', return_value=config), \
-                patch.object(viewer, 'windows', return_value='viewer-instance'), \
-                patch.object(viewer, 'wait_ready'), patch.object(viewer, 'attach') as attach, \
-                patch.object(viewer, 'connect', return_value=0), \
-                patch.object(viewer, 'submit_job', return_value={'jobId': 'account-job'}) as submit, \
-                patch.dict(os.environ, {}, clear=True), \
-                patch.object(sys, 'argv', ['viewer.py', '--launch', '--harness',
-                                         'codex-subscription', '--prompt', 'reach level 20']), \
-                contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(viewer.main(), 0)
-        args = submit.call_args.args
-        self.assertEqual(args[2], 'account-definition')
-        self.assertEqual(args[3]['command'], ['run-wow-agent', 'reach level 20'])
-        settings = {item['name']: item['value'] for item in args[3]['environment']}
-        self.assertEqual(settings['CODEX_AUTH_MODE'], 'subscription')
-        self.assertEqual(settings['AGENT_WOW_VIEWER'], '1')
-        self.assertEqual(settings['AGENT_WOW_WORLD_IMAGE'], 'world-image')
-        attach.assert_called_once_with('account-job', 'viewer-instance', config)
+        for harness in ('codex', 'claude'):
+            with self.subTest(harness=harness), tempfile.TemporaryDirectory() as directory, \
+                    patch.object(viewer, 'ROOT', Path(directory)), \
+                    patch.object(viewer, 'outputs', return_value=config), \
+                    patch.object(viewer, 'windows', return_value='viewer-instance'), \
+                    patch.object(viewer, 'wait_ready'), patch.object(viewer, 'attach') as attach, \
+                    patch.object(viewer, 'connect', return_value=0), \
+                    patch.object(viewer, 'submit_job', return_value={'jobId': 'account-job'}) as submit, \
+                    patch.dict(os.environ, {}, clear=True), \
+                    patch.object(sys, 'argv', ['viewer.py', '--launch', '--harness', harness,
+                                             '--prompt', 'reach level 20']), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(viewer.main(), 0)
+            args = submit.call_args.args
+            self.assertEqual(args[2], f'{harness}-definition')
+            self.assertEqual(args[3]['command'], ['run-wow-agent', 'reach level 20'])
+            settings = {item['name']: item['value'] for item in args[3]['environment']}
+            self.assertEqual(settings['AGENT_WOW_HARNESS'], harness)
+            self.assertEqual(settings['AGENT_WOW_VIEWER'], '1')
+            self.assertEqual(settings['AGENT_WOW_WORLD_IMAGE'], 'world-image')
+            attach.assert_called_once_with('account-job', 'viewer-instance', config)
 
     def test_completed_job_is_not_attached(self):
         with patch.object(viewer, 'aws', return_value=[{'status': 'SUCCEEDED'}]), patch.object(viewer, 'upload') as upload:
@@ -67,10 +68,22 @@ class ObserverTests(unittest.TestCase):
         self.world = MagicMock()
         self.world.attach_socket.return_value._sock.recv.return_value = b'You change security level of account WATCHER to 2.'
         self.docker.from_env.return_value.containers.list.return_value = [self.world]
-        spec = importlib.util.spec_from_file_location('observer_helper', Path(__file__).resolve().parents[1] / 'docker/prepare_viewer.py')
-        self.module = importlib.util.module_from_spec(spec)
-        with patch.dict(sys.modules, {'boto3': self.aws, 'docker': self.docker}):
-            spec.loader.exec_module(self.module)
+        with patch.dict(sys.modules, {'boto3': self.aws, 'docker': self.docker}), \
+                patch.object(sys, 'path', [str(Path(__file__).resolve().parents[1] / 'docker'), *sys.path]):
+            self.accounts = importlib.import_module('prepare_wow_account')
+            self.module = importlib.import_module('prepare_viewer')
+
+    def test_saved_player_credentials_are_reused_but_cannot_be_used_for_observer(self):
+        auth = self.root / 'auth.json'
+        original = json.dumps({'username': 'EXISTING', 'password': 'AlreadySaved123'})
+        auth.write_text(original)
+        with patch.object(self.accounts.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
+            account, _ = self.accounts.ensure_account(self.root)
+            self.assertEqual(account['username'], 'EXISTING')
+            with self.assertRaises(ValueError):
+                self.accounts.ensure_account(self.root, 'WATCHER')
+        self.assertEqual(auth.read_text(), original)
+        self.world.attach_socket.assert_not_called()
 
     def test_observer_creation_uses_separate_account_and_no_agent_mutations(self):
         results = [subprocess.CompletedProcess([], 1), subprocess.CompletedProcess([], 0),

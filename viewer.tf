@@ -193,25 +193,3 @@ resource "aws_batch_job_queue" "viewer" {
   }
 }
 output "viewer_job_queue" { value = aws_batch_job_queue.viewer.name }
-
-variable "viewer_image_tag" {
-  type    = string
-  default = "build-viewer-20261024-v3"
-}
-resource "aws_batch_job_definition" "viewer" {
-  name                  = "agent-wow-viewer"
-  type                  = "container"
-  platform_capabilities = ["EC2"]
-  retry_strategy { attempts = 1 }
-  timeout { attempt_duration_seconds = var.job_timeout_seconds }
-  container_properties = jsonencode(merge(jsondecode(aws_batch_job_definition.agent.container_properties), {
-    image = "${aws_ecr_repository.agent.repository_url}:${var.viewer_image_tag}"
-    environment = concat(jsondecode(aws_batch_job_definition.agent.container_properties).environment, [
-      { name = "AGENT_WOW_VIEWER", value = "1" },
-      { name = "AGENT_WOW_WORLD_IMAGE", value = "${aws_ecr_repository.agent.repository_url}:world-watch-9fc017d9-cb9fa4a8" }
-    ])
-  }))
-  depends_on = [aws_iam_role_policy.viewer_game]
-}
-output "viewer_job_definition" { value = aws_batch_job_definition.viewer.arn }
-output "viewer_agent_image" { value = "${aws_ecr_repository.agent.repository_url}:${var.viewer_image_tag}" }

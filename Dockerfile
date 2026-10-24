@@ -6,31 +6,14 @@
 # Build later: docker build -t agent-wow-sandbox .
 # After pushing source changes, build with --build-arg AGENT_WOW_REF=<commit-sha>
 # to fetch that exact revision instead of reusing a cached branch checkout.
-# Run later:   docker run --privileged -it --stop-timeout 120 --name agent-wow-sandbox \
-#                --env-file ./config/codex.env \
-#                -v agent-wow-workspace:/workspace \
-#                -v agent-wow-docker:/var/lib/docker \
-#                -v agent-wow-codex:/root/.codex agent-wow-sandbox
-#
-# --privileged is required for this container's own Docker daemon. Do not mount
-# the host Docker socket: gameplay modules need paths in this container.
-# Build the agent workspace for the host architecture so Codex's sandbox runs
-# natively. Only the AzerothCore services below require amd64 emulation on ARM.
-# First startup downloads server images/game data and imports the databases.
-# Allow several GB of disk and 10-20 minutes for that first startup.
-# config/codex.env supplies CODEX_API_KEY for the default OpenAI provider.
-# For OpenRouter, supply OPENROUTER_API_KEY, CODEX_MODEL_PROVIDER=openrouter,
-# and CODEX_MODEL=<OpenRouter model ID> as runtime environment variables.
-# config/openrouter.env holds the local key for --env-file; upload its AWS copy
-# with python3 upload-openrouter-key.py after applying main.tf.
-# Keep this file private and supply a valid key on each deployment.
-# With OpenAI, if CODEX_API_KEY is absent, startup reuses a saved ChatGPT login or displays
-# a device-login URL/code. That optional login persists in agent-wow-codex.
-# The agent builds gameplay modules, creates an orc warrior, and works through
-# the Valley of Trials quests. Progress and reports persist under /workspace.
-# Append `bash` to the run command to open a shell instead of starting the agent.
-# Authentication/CLI reference: https://learn.chatgpt.com/docs/auth
-#                            https://learn.chatgpt.com/docs/cli/reference
+# Run with a saved account credential supplied through --env-file ./config/account.env.
+# Select AGENT_WOW_HARNESS=codex (default) or claude and pass a quoted task:
+# docker run --privileged --stop-timeout 120 --env-file ./config/account.env \
+#   -v agent-wow-workspace:/workspace -v agent-wow-docker:/var/lib/docker \
+#   agent-wow-sandbox run-wow-agent "your task"
+# Codex requires CODEX_AUTH_JSON; Claude requires CLAUDE_CODE_OAUTH_TOKEN.
+# The container starts its own Docker daemon; do not mount the host socket.
+# Reports and journal records persist under /workspace and are exported to S3 in Batch.
 
 ARG GO_VERSION=1.27.2
 FROM golang:${GO_VERSION}-bookworm AS go-toolchain
@@ -39,11 +22,12 @@ FROM node:24-bookworm-slim
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG DEBIAN_FRONTEND=noninteractive
 ARG CODEX_VERSION=0.163.0
+ARG CLAUDE_VERSION=2.1.306
 ARG AGENT_WOW_REPOSITORY=https://github.com/TuckerBMorgan/agent-wow.git
 ARG AGENT_WOW_REF=main
 ARG AZEROTHCORE_REF=master
 
-ENV PATH="/usr/local/go/bin:/opt/venv/bin:/root/go/bin:${PATH}" \
+ENV PATH="/usr/local/go/bin:/opt/venv/bin:/root/go/bin:/home/node/go/bin:${PATH}" \
     DOCKER_HOST=unix:///var/run/docker.sock \
     AGENT_WOW_CONFIG_DIR=/workspace/config \
     AGENT_WOW_DATA_DIR=/workspace/data \
@@ -75,8 +59,10 @@ RUN apt-get update \
          docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm install --global "@openai/codex@${CODEX_VERSION}" \
+RUN npm install --global "@openai/codex@${CODEX_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_VERSION}" \
     && npm cache clean --force \
+    && (getent group docker >/dev/null || groupadd --system docker) \
+    && usermod -aG docker node \
     && python3 -m venv /opt/venv \
     && pip install --no-cache-dir grpcio grpcio-tools protobuf requests PyYAML docker
 
@@ -100,7 +86,7 @@ RUN git clone --depth 1 https://github.com/agent-wow/go-module-template.git /opt
 # Debian's /etc/profile resets PATH for the login shells used by Codex.
 # Keep the same toolchain available to both ordinary and login shells.
 COPY <<'PROFILE' /etc/profile.d/agent-wow-path.sh
-export PATH="/usr/local/go/bin:/opt/venv/bin:/root/go/bin:$PATH"
+export PATH="/usr/local/go/bin:/opt/venv/bin:$HOME/go/bin:$PATH"
 PROFILE
 
 # Catch missing toolchain paths during the build, before starting a game run.
@@ -203,137 +189,19 @@ YAML
 # Credentials are generated on first launch, not baked into the image.
 # The server's interactive console may echo its account-creation command;
 # treat the nested server logs as private alongside the saved account file.
-COPY --chmod=755 docker/prepare_wow_account.py /usr/local/bin/prepare-wow-account
+COPY --chmod=755 docker/prepare_wow_account.py /usr/local/bin/prepare_wow_account.py
 COPY --chmod=755 docker/prepare_viewer.py /usr/local/bin/prepare-wow-viewer
-COPY --chmod=755 docker/codex_openrouter_cache.py /usr/local/bin/codex-openrouter-cache
 
 COPY <<'TASK' /opt/orc-quest-task.txt
 Create an night elf druid and complete every available quest in the starting area
 TASK
 
-COPY --chmod=755 <<'BASH' /usr/local/bin/run-wow-agent
-#!/bin/bash
-set -Eeuo pipefail
-if (( $# > 1 )); then
-    echo 'Usage: run-wow-agent ["prompt"] — quote the prompt as one argument.' >&2
-    exit 2
-fi
-if (( $# == 1 )) && [[ ! "$1" =~ [^[:space:]] ]]; then
-    echo 'Prompt must not be blank.' >&2
-    exit 2
-fi
-umask 077
-mkdir -p /root/.codex /root/.cache /root/.docker /root/go /workspace/logs/agent
-
-provider=${CODEX_MODEL_PROVIDER:-openai}
-model=${CODEX_MODEL:-}
-effort=${CODEX_REASONING_EFFORT:-}
-case "$provider" in
-    openai) unset OPENROUTER_API_KEY ;;
-    openrouter) unset CODEX_API_KEY OPENAI_API_KEY ;;
-    *) echo 'CODEX_MODEL_PROVIDER must be openai or openrouter.' >&2; exit 2 ;;
-esac
-if [[ ${CODEX_MODEL+x} && ( ! "$model" =~ ^[A-Za-z0-9_./:~+-]+$ || "$model" == -* ) ]]; then
-    echo 'CODEX_MODEL must be a nonempty model ID without whitespace or shell options.' >&2
-    exit 2
-fi
-if [[ ${CODEX_REASONING_EFFORT+x} ]]; then
-    case "$effort" in
-        none|minimal|low|medium|high|xhigh|max|ultra) ;;
-        *) echo 'CODEX_REASONING_EFFORT must be none, minimal, low, medium, high, xhigh, max, or ultra.' >&2; exit 2 ;;
-    esac
-    if [[ "$model" == gpt-6.1-sol || "$model" == openai/gpt-6.1-sol ]]; then
-        case "$effort" in
-            low|medium|high|xhigh|max) ;;
-            *) echo 'Sol 6.1 supports only low, medium, high, xhigh, or max reasoning effort.' >&2; exit 2 ;;
-        esac
-    fi
-fi
-
-# CLI overrides preserve existing user configuration. Command-backed auth
-# gives Codex the OpenRouter model catalog without putting the key in TOML.
-codex_cli=(codex --config 'cli_auth_credentials_store="file"' \
-    --config "model_provider=\"$provider\"")
-if [[ "$provider" == openrouter ]]; then
-    if [[ ! "${OPENROUTER_API_KEY:-}" =~ [^[:space:]] ]]; then
-        echo 'OpenRouter requires a nonempty OPENROUTER_API_KEY.' >&2
-        exit 1
-    fi
-    if [[ -z "$model" ]]; then
-        echo 'OpenRouter requires CODEX_MODEL with an OpenRouter model ID.' >&2
-        exit 2
-    fi
-    codex_cli+=(--config 'model_providers.openrouter={name="OpenRouter",base_url="https://openrouter.ai/api/v1",wire_api="responses",auth={command="printenv",args=["OPENROUTER_API_KEY"]}}')
-    echo 'Using the runtime OpenRouter API key; browser sign-in is skipped.'
-elif [[ ${CODEX_API_KEY+x} ]]; then
-    if [[ ! "$CODEX_API_KEY" =~ [^[:space:]] ]]; then
-        echo 'CODEX_API_KEY is empty. Supply a valid key through --env-file ./config/codex.env.' >&2
-        exit 1
-    fi
-    echo 'Using the runtime API key for Codex; browser sign-in is skipped.'
-else
-    # Local OpenAI runs can fall back to a saved ChatGPT/device login.
-    if ! "${codex_cli[@]}" login status >/dev/null 2>&1; then
-        echo 'Sign in using the device-login URL and code below. The game task will start after sign-in.'
-        if ! "${codex_cli[@]}" login --device-auth; then
-            echo 'Codex sign-in failed. Enable device-code login in ChatGPT settings, then restart the container.' >&2
-            exit 1
-        fi
-    fi
-    if ! "${codex_cli[@]}" login status >/dev/null 2>&1; then
-        echo 'Codex has no saved login. The gameplay agent was not started.' >&2
-        exit 1
-    fi
-fi
-if [[ -n "$model" ]]; then codex_cli+=(--model "$model"); fi
-if [[ -n "$effort" ]]; then codex_cli+=(--config "model_reasoning_effort=\"$effort\""); fi
-
-run_dir=$(mktemp -d "/workspace/logs/agent/$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")
-if (( $# == 1 )); then
-    printf '%s' "$1" > "$run_dir/task.txt"
-else
-    cp /opt/orc-quest-task.txt "$run_dir/task.txt"
-fi
-echo "Starting the game task. Run log: $run_dir/agent.log"
-echo "Codex provider: $provider; model: ${model:-Codex default}"
-echo "Reasoning effort override: ${effort:-unset (Codex/provider default)}"
-
-# Capture OpenRouter HTTP error details before Codex discards the response body.
-# The same adapter adds the cache directive only for Anthropic models.
-if [[ "$provider" == openrouter ]]; then
-    codex_cli=(/usr/local/bin/codex-openrouter-cache "${codex_cli[@]}")
-fi
-
-# Keep the workspace sandbox, allowing the local Docker socket and build caches.
-# Network access is required for the game connection and module dependencies.
-# 'never' prevents unattended runs from waiting on approval prompts; denied
-# operations still fail inside the configured sandbox.
-set +e
-"${codex_cli[@]}" --ask-for-approval never \
-    --config sandbox_workspace_write.network_access=true \
-    exec --sandbox workspace-write --cd /workspace --skip-git-repo-check \
-    --add-dir /run --add-dir /root/go --add-dir /root/.cache --add-dir /root/.docker \
-    --color never --output-last-message "$run_dir/final-report.txt" \
-    - < "$run_dir/task.txt" 2>&1 | tee "$run_dir/agent.log"
-pipeline_status=("${PIPESTATUS[@]}")
-set -e
-status=${pipeline_status[0]}
-printf '%s\n' "$status" > "$run_dir/agent-exit-code.txt"
-if (( status != 0 )); then
-    echo "Codex exited with status $status. Saved progress and logs remain in /workspace." >&2
-elif (( pipeline_status[1] != 0 )); then
-    echo 'The agent log could not be saved completely.' >&2
-    status=1
-else
-    echo "Agent run finished. Review $run_dir/final-report.txt and /workspace/journal for quest results."
-fi
-# A successful CLI exit is not independent proof that every quest was completed.
-exit "$status"
-BASH
+COPY agent_common.py /usr/local/bin/agent_common.py
+COPY --chmod=755 docker/run_agent.py /usr/local/bin/run-wow-agent
 
 RUN /opt/venv/bin/pip install --no-cache-dir boto3
 
-# AWS Batch loads the selected API key at runtime using its job role.
+# AWS Batch supplies the selected account credential through its execution role.
 # Workers are disposable. Export only reports and quest evidence;
 # credentials, databases, and Codex login/session directories stay local.
 COPY --chmod=755 docker/run_batch_job.py /usr/local/bin/run-batch-job
@@ -355,6 +223,10 @@ fi
 if [[ ! -f /workspace/AGENTS.md ]]; then
     cp /opt/workspace-template/AGENTS.md /workspace/AGENTS.md
 fi
+# Both harnesses read the same workspace instructions.
+if [[ ! -e /workspace/CLAUDE.md ]]; then
+    ln -s AGENTS.md /workspace/CLAUDE.md
+fi
 if [[ ! -d /workspace/go-module-template ]]; then
     cp -a /opt/go-module-template /workspace/go-module-template
 fi
@@ -366,7 +238,7 @@ if [[ ! -f /workspace/server/.env ]]; then
         > /workspace/server/.env
 fi
 cp /opt/server/compose.yaml /workspace/server/compose.yaml
-compose=(env -u CODEX_API_KEY -u OPENAI_API_KEY -u OPENROUTER_API_KEY docker compose --project-directory /workspace/server -f /workspace/server/compose.yaml)
+compose=(env -u CODEX_AUTH_JSON -u CLAUDE_CODE_OAUTH_TOKEN docker compose --project-directory /workspace/server -f /workspace/server/compose.yaml)
 
 # Start a real local daemon so module bind mounts resolve in this filesystem.
 # Share image layers on the dedicated ext4 /var/lib/docker volume.
@@ -411,7 +283,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-env -u CODEX_API_KEY -u OPENAI_API_KEY -u OPENROUTER_API_KEY dockerd --host=unix:///var/run/docker.sock \
+env -u CODEX_AUTH_JSON -u CLAUDE_CODE_OAUTH_TOKEN dockerd --host=unix:///var/run/docker.sock \
     --feature=containerd-snapshotter=false --storage-driver=overlay2 \
     > /workspace/logs/dockerd.log 2>&1 &
 daemon_pid=$!
@@ -425,7 +297,7 @@ if ! docker info >/dev/null 2>&1; then
     exit 1
 fi
 
-prepare-wow-viewer --image
+env -u CODEX_AUTH_JSON -u CLAUDE_CODE_OAUTH_TOKEN prepare-wow-viewer --image
 "${compose[@]}" up -d
 service_ready() {
     local container_id
@@ -445,8 +317,8 @@ if [[ "$ready" != true ]]; then
     echo 'Game server startup timed out. Inspect docker compose logs in /workspace/server.' >&2
     exit 1
 fi
-env -u CODEX_API_KEY -u OPENAI_API_KEY -u OPENROUTER_API_KEY prepare-wow-account
-prepare-wow-viewer --account
+env -u CODEX_AUTH_JSON -u CLAUDE_CODE_OAUTH_TOKEN prepare_wow_account.py
+env -u CODEX_AUTH_JSON -u CLAUDE_CODE_OAUTH_TOKEN prepare-wow-viewer --account
 
 cat <<'MESSAGE'
 
@@ -457,11 +329,9 @@ Workspace ready in /workspace.
   server source:         /workspace/azerothcore-reference
   logs and records:      /workspace/logs and /workspace/journal
 
-The default command starts the game task using the selected Codex provider.
-OpenAI uses CODEX_API_KEY. OpenRouter uses OPENROUTER_API_KEY and CODEX_MODEL.
-Set CODEX_MODEL_PROVIDER=openrouter to select OpenRouter (default: openai).
+The default command starts Codex with your saved ChatGPT login.
+Set AGENT_WOW_HARNESS=claude to use your Claude account instead.
 Pass a quoted prompt to run-wow-agent to override the image's default task.
-OpenAI without an API key uses a saved ChatGPT login or requests device login.
 Agent logs and final reports are stored in /workspace/logs/agent.
 MESSAGE
 
@@ -471,7 +341,14 @@ set +e
 if [[ "${1:-}" == run-wow-agent ]]; then
     # Give the headless agent, log writer, and game clients one process group
     # so cleanup can stop them all before shutting down the game server.
-    setsid --wait "$@" <&0 &
+    if [[ "${AGENT_WOW_HARNESS:-codex}" == claude ]]; then
+        # Claude Code requires an unprivileged user for unattended tool execution.
+        mkdir -p /home/node/{.claude,.cache,.docker,go}
+        chown -R node:node /workspace /home/node
+        setsid --wait runuser -u node -- "$@" <&0 &
+    else
+        setsid --wait "$@" <&0 &
+    fi
     child_is_group=true
 else
     "$@" <&0 &
