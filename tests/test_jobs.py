@@ -55,12 +55,32 @@ class JobHistoryTests(unittest.TestCase):
         self.assertEqual(api.call_count, 1)
         self.assertEqual(self.rows(), [])
 
+    def test_native_deepseek_submission_records_its_model_and_effort(self):
+        with mock.patch.dict(launch.os.environ, {}, clear=True):
+            overrides = launch.container_overrides('Full orc warrior task', 'deepseek')
+        with mock.patch.object(launch, 'aws_request', return_value={'jobId': 'deepseek-job'}):
+            launch.submit_job('test-region', 'deepseek-test', 'agent-wow-deepseek:1', overrides)
+        row, = self.rows()
+        self.assertEqual(row['model'], 'deepseek/deepseek-v4.1-flash-1017')
+        self.assertEqual(row['effort'], 'high')
+        self.assertEqual(row['provider'], 'openrouter')
+
     def test_database_failure_before_submission_prevents_launch(self):
         with mock.patch.object(launch, 'database', side_effect=sqlite3.OperationalError('read only')):
             with mock.patch.object(launch, 'aws_request') as api:
                 with self.assertRaises(sqlite3.Error):
                     launch.submit_job('test-region', 'test-job', 'test-definition', {})
         api.assert_not_called()
+
+    def test_subscription_history_is_distinguished_from_openrouter_billing(self):
+        with mock.patch.dict(launch.os.environ, {}, clear=True):
+            overrides=launch.container_overrides('Orc warrior task','claude-subscription')
+        with mock.patch.object(launch,'aws_request',return_value={'jobId':'subscription-job'}):
+            launch.submit_job('test-region','subscription-test','agent-wow-claude-subscription:1',overrides)
+        row, = self.rows()
+        self.assertEqual(row['provider'],'claude-subscription')
+        self.assertEqual(row['model'],'claude-opus-5-5')
+        self.assertEqual(row['effort'],'medium')
 
     def test_failure_to_record_after_submission_reports_job_id_without_retry(self):
         output = io.StringIO()
@@ -82,6 +102,28 @@ class JobHistoryTests(unittest.TestCase):
         rows = self.rows()
         self.assertEqual(len(rows), 2)
         self.assertEqual({row['job_name'] for row in rows}, {'agent-wow-orc-warrior', 'agent-wow-orc-hunter'})
+        self.assertTrue(all(row['prompt'].startswith('Create one orc ') for row in rows))
+
+    def test_claude_matrix_routes_and_records_native_claude_settings(self):
+        environment = {'CLAUDE_MODEL': 'anthropic/claude-opus-5.5', 'CLAUDE_EFFORT': 'medium',
+                       'CODEX_MODEL': 'must-not-be-recorded'}
+        with mock.patch.object(launch_all, 'RACE_CLASSES', {'orc': ('warrior', 'hunter')}), \
+             mock.patch.object(launch_all.sys, 'argv', ['launch_all.py', '--harness', 'claude']), \
+             mock.patch.dict(launch_all.os.environ, environment, clear=True), \
+             mock.patch.object(launch, 'aws_request', side_effect=[{'jobId': 'one'}, {'jobId': 'two'}]) as api, \
+             contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(launch_all.main(), 0)
+        self.assertEqual(api.call_count, 2)
+        for call in api.call_args_list:
+            args = call.args
+            self.assertEqual(args[args.index('--job-definition') + 1], 'agent-wow-claude')
+        rows = self.rows()
+        self.assertEqual({row['job_name'] for row in rows}, {
+            'agent-wow-claude-orc-warrior', 'agent-wow-claude-orc-hunter',
+        })
+        self.assertTrue(all(row['provider'] == 'openrouter' for row in rows))
+        self.assertTrue(all(row['model'] == 'anthropic/claude-opus-5.5' for row in rows))
+        self.assertTrue(all(row['effort'] == 'medium' for row in rows))
         self.assertTrue(all(row['prompt'].startswith('Create one orc ') for row in rows))
 
 

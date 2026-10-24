@@ -30,13 +30,18 @@ def database():
 def record_job(job, region):
     container = job.get('container') or {}
     settings = {item['name']: item['value'] for item in container.get('environment') or []}
+    prefix = 'DEEPSEEK' if 'DEEPSEEK_MODEL' in settings else ('CLAUDE' if 'CLAUDE_MODEL' in settings else 'CODEX')
     command = container.get('command') or []
     prompt = command[1] if len(command) == 2 and command[0] == 'run-wow-agent' else None
     with database() as db:
         db.execute('INSERT OR REPLACE INTO jobs VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)', (
             job['jobId'], job['jobName'], region, job.get('jobDefinition'),
-            job.get('createdAt'), job['status'], settings.get('CODEX_MODEL_PROVIDER', 'openai'),
-            settings.get('CODEX_MODEL'), settings.get('CODEX_REASONING_EFFORT'), prompt,
+            job.get('createdAt'), job['status'],
+            ('claude-subscription' if settings.get('CLAUDE_AUTH_MODE') == 'subscription' else 'openrouter')
+            if prefix != 'CODEX' else ('codex-subscription' if settings.get('CODEX_AUTH_MODE') == 'subscription'
+                                      else settings.get('CODEX_MODEL_PROVIDER', 'openai')),
+            settings.get(f'{prefix}_MODEL'),
+            settings.get('CODEX_REASONING_EFFORT' if prefix == 'CODEX' else f'{prefix}_EFFORT'), prompt,
             job.get('startedAt'), job.get('stoppedAt'), container.get('exitCode'),
         ))
 

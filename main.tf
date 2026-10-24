@@ -43,6 +43,24 @@ variable "image_tag" {
   }
 }
 
+variable "claude_image_tag" {
+  description = "Existing native Claude Code image in the same ECR repository."
+  type        = string
+  default     = "build-claude-20261021T221539Z"
+}
+
+variable "deepseek_image_tag" {
+  description = "Native DeepSeek Harness image in the same ECR repository."
+  type        = string
+  default     = "build-deepseek-20261022T193042Z"
+}
+
+variable "claude_subscription_image_tag" {
+  description = "Claude Code image using subscription authentication for comparison runs."
+  type        = string
+  default     = "build-claude-subscription-20261023T174500Z"
+}
+
 variable "job_timeout_seconds" {
   description = "Maximum running time per job, including game setup and agent work."
   type        = number
@@ -128,6 +146,12 @@ resource "aws_secretsmanager_secret" "codex" {
 resource "aws_secretsmanager_secret" "openrouter" {
   name_prefix             = "agent-wow-openrouter-"
   description             = "Raw OPENROUTER_API_KEY loaded by OpenRouter jobs at startup"
+  recovery_window_in_days = 7
+}
+
+resource "aws_secretsmanager_secret" "claude_subscription" {
+  name_prefix             = "agent-wow-claude-subscription-"
+  description             = "Claude Code subscription OAuth token; populated outside OpenTofu"
   recovery_window_in_days = 7
 }
 
@@ -229,6 +253,19 @@ resource "aws_iam_role_policy" "execution" {
         Resource = "${aws_cloudwatch_log_group.agent.arn}:*"
       }
     ]
+  })
+}
+
+# ECS injects the token at startup. The gameplay job role cannot retrieve it.
+resource "aws_iam_role_policy" "claude_subscription_execution" {
+  role = aws_iam_role.execution.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = aws_secretsmanager_secret.claude_subscription.arn
+    }]
   })
 }
 
@@ -370,6 +407,131 @@ resource "aws_batch_job_definition" "agent" {
   depends_on = [aws_iam_role_policy.execution, aws_iam_role_policy.job]
 }
 
+# Native Claude Code shares the queue, compute pool, results bucket and OpenRouter key.
+resource "aws_batch_job_definition" "claude" {
+  name                  = "agent-wow-claude"
+  type                  = "container"
+  platform_capabilities = ["EC2"]
+  retry_strategy {
+    attempts = 1
+  }
+  timeout {
+    attempt_duration_seconds = var.job_timeout_seconds
+  }
+  container_properties = jsonencode({
+    image            = "${aws_ecr_repository.agent.repository_url}:${var.claude_image_tag}"
+    command          = ["run-wow-agent"]
+    privileged       = true
+    jobRoleArn       = aws_iam_role.job.arn
+    executionRoleArn = aws_iam_role.execution.arn
+    resourceRequirements = [
+      { type = "VCPU", value = "8" },
+      { type = "MEMORY", value = "28672" }
+    ]
+    environment = [
+      { name = "AWS_DEFAULT_REGION", value = var.aws_region },
+      { name = "AWS_RESULTS_BUCKET", value = aws_s3_bucket.results.id },
+      { name = "CLAUDE_MODEL", value = "anthropic/claude-opus-5.5" },
+      { name = "CLAUDE_EFFORT", value = "medium" },
+      { name = "OPENROUTER_SECRET_ARN", value = aws_secretsmanager_secret.openrouter.arn }
+    ]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.agent.name
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "agent-wow"
+      }
+    }
+  })
+  depends_on = [aws_iam_role_policy.execution, aws_iam_role_policy.job]
+}
+
+resource "aws_batch_job_definition" "claude_subscription" {
+  name                  = "agent-wow-claude-subscription"
+  type                  = "container"
+  platform_capabilities = ["EC2"]
+  retry_strategy {
+    attempts = 1
+  }
+  timeout {
+    attempt_duration_seconds = var.job_timeout_seconds
+  }
+  container_properties = jsonencode({
+    image            = "${aws_ecr_repository.agent.repository_url}:${var.claude_subscription_image_tag}"
+    command          = ["run-wow-agent"]
+    privileged       = true
+    jobRoleArn       = aws_iam_role.job.arn
+    executionRoleArn = aws_iam_role.execution.arn
+    resourceRequirements = [
+      { type = "VCPU", value = "8" },
+      { type = "MEMORY", value = "28672" }
+    ]
+    environment = [
+      { name = "AWS_DEFAULT_REGION", value = var.aws_region },
+      { name = "AWS_RESULTS_BUCKET", value = aws_s3_bucket.results.id },
+      { name = "AGENT_WOW_HARNESS", value = "claude" },
+      { name = "CLAUDE_AUTH_MODE", value = "subscription" },
+      { name = "CLAUDE_MODEL", value = "claude-opus-5-5" },
+      { name = "CLAUDE_EFFORT", value = "medium" }
+    ]
+    secrets = [{
+      name      = "CLAUDE_CODE_OAUTH_TOKEN"
+      valueFrom = aws_secretsmanager_secret.claude_subscription.arn
+    }]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.agent.name
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "agent-wow"
+      }
+    }
+  })
+  depends_on = [aws_iam_role_policy.execution, aws_iam_role_policy.job,
+  aws_iam_role_policy.claude_subscription_execution]
+}
+
+resource "aws_batch_job_definition" "deepseek" {
+  name                  = "agent-wow-deepseek"
+  type                  = "container"
+  platform_capabilities = ["EC2"]
+  retry_strategy {
+    attempts = 1
+  }
+  timeout {
+    attempt_duration_seconds = var.job_timeout_seconds
+  }
+  container_properties = jsonencode({
+    image            = "${aws_ecr_repository.agent.repository_url}:${var.deepseek_image_tag}"
+    command          = ["run-wow-agent"]
+    privileged       = true
+    jobRoleArn       = aws_iam_role.job.arn
+    executionRoleArn = aws_iam_role.execution.arn
+    resourceRequirements = [
+      { type = "VCPU", value = "8" },
+      { type = "MEMORY", value = "28672" }
+    ]
+    environment = [
+      { name = "AWS_DEFAULT_REGION", value = var.aws_region },
+      { name = "AWS_RESULTS_BUCKET", value = aws_s3_bucket.results.id },
+      { name = "AGENT_WOW_HARNESS", value = "deepseek" },
+      { name = "DEEPSEEK_MODEL", value = "deepseek/deepseek-v4.1-flash-1017" },
+      { name = "DEEPSEEK_EFFORT", value = "high" },
+      { name = "OPENROUTER_SECRET_ARN", value = aws_secretsmanager_secret.openrouter.arn }
+    ]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.agent.name
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "agent-wow"
+      }
+    }
+  })
+  depends_on = [aws_iam_role_policy.execution, aws_iam_role_policy.job]
+}
+
 output "region" {
   value = var.aws_region
 }
@@ -396,6 +558,19 @@ output "test_job_queue" {
 }
 output "job_definition" {
   value = aws_batch_job_definition.agent.arn
+}
+output "claude_job_definition" {
+  value = aws_batch_job_definition.claude.arn
+}
+output "deepseek_job_definition" {
+  value = aws_batch_job_definition.deepseek.arn
+}
+output "claude_subscription_job_definition" {
+  value = aws_batch_job_definition.claude_subscription.arn
+}
+output "claude_subscription_secret_arn" {
+  description = "Populate with the subscription token outside OpenTofu."
+  value       = aws_secretsmanager_secret.claude_subscription.arn
 }
 output "results_bucket" {
   value = aws_s3_bucket.results.id

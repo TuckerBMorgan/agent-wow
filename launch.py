@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 """Launch and watch an AWS Batch run; optionally rebuild or watch an existing job.
 
-Usage: python3 launch.py [--rebuild] ["prompt"]
+Usage: python3 launch.py [--harness codex|claude|deepseek] [--rebuild] ["prompt"]
        python3 launch.py --watch JOB_ID
 CODEX_MODEL_PROVIDER and CODEX_MODEL select the provider and model at launch.
 Defaults to OpenRouter, openai/gpt-6.1-sol, and high reasoning effort.
+Claude uses CLAUDE_MODEL and CLAUDE_EFFORT (Opus 5.5 and medium by default).
+DeepSeek uses DEEPSEEK_MODEL and DEEPSEEK_EFFORT (V4.1 Flash 1017 and high).
 """
 
 import argparse
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -18,6 +21,11 @@ import sys
 import time
 
 from jobs import database, record_job
+
+
+JOB_DEFINITIONS = {'codex': 'agent-wow', 'claude': 'agent-wow-claude',
+                   'codex-subscription': 'agent-wow-codex-subscription',
+                   'claude-subscription': 'agent-wow-claude-subscription', 'deepseek': 'agent-wow-deepseek'}
 
 
 class AwsError(RuntimeError):
@@ -142,7 +150,58 @@ def follow(job_id, region, log_group, poll_seconds=5, final_wait_seconds=15):
         time.sleep(poll_seconds)
 
 
-def container_overrides(prompt):
+def container_overrides(prompt, harness='codex'):
+    if harness in ('claude', 'claude-subscription'):
+        subscription = harness == 'claude-subscription'
+        model = os.environ.get('CLAUDE_MODEL', 'claude-opus-5-5' if subscription else 'anthropic/claude-opus-5.5')
+        effort = os.environ.get('CLAUDE_EFFORT', 'medium')
+        pattern = r'claude-[A-Za-z0-9.-]+' if subscription else r'anthropic/[A-Za-z0-9_./:~+\[\]-]+'
+        if not re.fullmatch(pattern, model):
+            raise ValueError('CLAUDE_MODEL must match the selected Claude provider.')
+        if effort not in ('low', 'medium', 'high', 'xhigh', 'max'):
+            raise ValueError('CLAUDE_EFFORT must be low, medium, high, xhigh, or max.')
+        overrides = {'environment': [
+            {'name': 'CLAUDE_MODEL', 'value': model},
+            {'name': 'CLAUDE_EFFORT', 'value': effort},
+        ]}
+        if subscription:
+            overrides['environment'].append({'name': 'CLAUDE_AUTH_MODE', 'value': 'subscription'})
+    elif harness == 'deepseek':
+        model = os.environ.get('DEEPSEEK_MODEL', 'deepseek/deepseek-v4.1-flash-1017')
+        effort = os.environ.get('DEEPSEEK_EFFORT', 'high')
+        if not re.fullmatch(r'deepseek/[A-Za-z0-9_./:~+-]+', model):
+            raise ValueError('DEEPSEEK_MODEL must be a DeepSeek OpenRouter model ID.')
+        if effort not in ('low', 'high', 'max'):
+            raise ValueError('DEEPSEEK_EFFORT must be low, high, or max.')
+        overrides = {'environment': [
+            {'name': 'DEEPSEEK_MODEL', 'value': model},
+            {'name': 'DEEPSEEK_EFFORT', 'value': effort},
+        ]}
+    elif harness == 'codex-subscription':
+        model = os.environ.get('CODEX_MODEL', 'gpt-6.1-sol')
+        effort = os.environ.get('CODEX_REASONING_EFFORT', 'medium')
+        if not re.fullmatch(r'gpt-[A-Za-z0-9.-]+', model):
+            raise ValueError('Codex account runs require a native OpenAI model ID.')
+        if effort not in ('low', 'medium', 'high', 'xhigh', 'max'):
+            raise ValueError('Codex account effort must be low, medium, high, xhigh, or max.')
+        overrides = {'environment': [
+            {'name': 'CODEX_AUTH_MODE', 'value': 'subscription'},
+            {'name': 'CODEX_MODEL_PROVIDER', 'value': 'openai'},
+            {'name': 'CODEX_MODEL', 'value': model},
+            {'name': 'CODEX_REASONING_EFFORT', 'value': effort},
+        ]}
+    elif harness == 'codex':
+        overrides = codex_overrides()
+    else:
+        raise ValueError('Harness must be codex, claude, or deepseek.')
+    if prompt is not None:
+        if not prompt.strip():
+            raise ValueError('Prompt must not be blank.')
+        overrides['command'] = ['run-wow-agent', prompt]
+    return overrides
+
+
+def codex_overrides():
     provider = os.environ.get('CODEX_MODEL_PROVIDER', 'openrouter')
     model = os.environ.get('CODEX_MODEL', 'openai/gpt-6.1-sol' if provider == 'openrouter' else 'gpt-6.1-sol')
     effort = os.environ.get('CODEX_REASONING_EFFORT', 'high')
@@ -160,10 +219,6 @@ def container_overrides(prompt):
         overrides['environment'].append({'name': 'CODEX_MODEL', 'value': model})
     if effort is not None:
         overrides['environment'].append({'name': 'CODEX_REASONING_EFFORT', 'value': effort})
-    if prompt is not None:
-        if not prompt.strip():
-            raise ValueError('Prompt must not be blank.')
-        overrides['command'] = ['run-wow-agent', prompt]
     return overrides
 
 
@@ -209,21 +264,25 @@ def rebuild(region):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument('--rebuild', action='store_true', help='Build/push the image and apply OpenTofu before launching.')
+    mode.add_argument('--rebuild', action='store_true', help='Build/push the Codex image and apply OpenTofu before launching.')
     mode.add_argument('--watch', metavar='JOB_ID', help='Watch an existing job without launching another.')
     parser.add_argument('prompt', nargs='?', help='Override the image default task; quote as one argument.')
+    parser.add_argument('--harness', choices=JOB_DEFINITIONS, default='codex')
     parser.add_argument('--queue', default='agent-wow', help='Batch queue; agent-wow-test has higher priority.')
     parser.add_argument('--region', default='us-west-2')
     parser.add_argument('--log-group', default='/aws/batch/agent-wow')
     args = parser.parse_args()
     if args.watch is not None and (not args.watch.strip() or args.prompt is not None):
         parser.error('--watch requires a nonempty job ID and does not accept a prompt.')
+    if args.rebuild and args.harness != 'codex':
+        parser.error('--rebuild builds the Codex Dockerfile. Other harnesses use their images configured in main.tf.')
     job_id = args.watch
     try:
         if not job_id:
-            overrides = container_overrides(args.prompt)
-            definition = rebuild(args.region) if args.rebuild else os.environ.get('WOW_JOB_DEFINITION', 'agent-wow')
-            submission = submit_job(args.region, 'agent-wow', definition, overrides, args.queue)
+            overrides = container_overrides(args.prompt, args.harness)
+            name = JOB_DEFINITIONS[args.harness]
+            definition = rebuild(args.region) if args.rebuild else os.environ.get('WOW_JOB_DEFINITION', name)
+            submission = submit_job(args.region, name, definition, overrides, args.queue)
             job_id = submission['jobId']
             print(json.dumps(submission), flush=True)
         return follow(job_id, args.region, args.log_group)

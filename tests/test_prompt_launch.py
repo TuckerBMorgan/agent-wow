@@ -272,6 +272,44 @@ class PromptLaunchTests(unittest.TestCase):
             {'name': 'CODEX_REASONING_EFFORT', 'value': 'high'},
         ])
 
+    def test_claude_launch_routes_prompt_and_ignores_codex_settings(self):
+        self.assert_succeeded(self.run_script(
+            'launch.py', '--harness', 'claude', '--', self.prompt,
+            CODEX_MODEL_PROVIDER='not-used', CODEX_MODEL='not-used', CODEX_REASONING_EFFORT='not-used',
+        ))
+        payload = self.submission()
+        self.assertEqual(payload['jobDefinition'], 'agent-wow-claude')
+        self.assertEqual(payload['jobName'], 'agent-wow-claude')
+        self.assertEqual(payload['containerOverrides']['command'], ['run-wow-agent', self.prompt])
+        self.assertEqual(payload['containerOverrides']['environment'], [
+            {'name': 'CLAUDE_MODEL', 'value': 'anthropic/claude-opus-5.5'},
+            {'name': 'CLAUDE_EFFORT', 'value': 'medium'},
+        ])
+        self.assert_watched_once()
+
+    def test_claude_launch_accepts_other_anthropic_model_and_effort(self):
+        self.assert_succeeded(self.run_script(
+            'launch.py', '--harness', 'claude', CLAUDE_MODEL='anthropic/claude-fable-5.1', CLAUDE_EFFORT='high',
+        ))
+        self.assertEqual(self.submission()['containerOverrides']['environment'], [
+            {'name': 'CLAUDE_MODEL', 'value': 'anthropic/claude-fable-5.1'},
+            {'name': 'CLAUDE_EFFORT', 'value': 'high'},
+        ])
+
+    def test_claude_rejects_invalid_settings_before_submitting(self):
+        for environment in ({'CLAUDE_MODEL': ''}, {'CLAUDE_MODEL': 'openai/gpt-6.1-sol'},
+                            {'CLAUDE_EFFORT': 'none'}, {'CLAUDE_EFFORT': 'typo'}):
+            with self.subTest(environment=environment):
+                result = self.run_script('launch.py', '--harness', 'claude', **environment)
+                self.assertEqual(result.returncode, 2)
+                self.assertEqual(self.records('calls.jsonl'), [])
+
+    def test_claude_rebuild_cannot_build_or_submit_a_codex_image(self):
+        result = self.run_script('launch.py', '--harness', 'claude', '--rebuild')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b'Codex Dockerfile', result.stderr)
+        self.assertEqual(self.records('calls.jsonl'), [])
+
     def test_launch_rejects_invalid_prompts_before_aws(self):
         for args in [('',), (' \n\t\r ',), ('one', 'two')]:
             with self.subTest(args=args):

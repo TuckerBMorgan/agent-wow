@@ -168,7 +168,7 @@ services:
       db-import:
         condition: service_completed_successfully
   worldserver:
-    image: acore/ac-wotlk-worldserver:master
+    image: ${AGENT_WOW_WORLD_IMAGE:-acore/ac-wotlk-worldserver:master}
     platform: linux/amd64
     environment: *game-env
     stdin_open: true
@@ -204,6 +204,7 @@ YAML
 # The server's interactive console may echo its account-creation command;
 # treat the nested server logs as private alongside the saved account file.
 COPY --chmod=755 docker/prepare_wow_account.py /usr/local/bin/prepare-wow-account
+COPY --chmod=755 docker/prepare_viewer.py /usr/local/bin/prepare-wow-viewer
 COPY --chmod=755 docker/codex_openrouter_cache.py /usr/local/bin/codex-openrouter-cache
 
 COPY <<'TASK' /opt/orc-quest-task.txt
@@ -424,6 +425,7 @@ if ! docker info >/dev/null 2>&1; then
     exit 1
 fi
 
+prepare-wow-viewer --image
 "${compose[@]}" up -d
 service_ready() {
     local container_id
@@ -444,6 +446,7 @@ if [[ "$ready" != true ]]; then
     exit 1
 fi
 env -u CODEX_API_KEY -u OPENAI_API_KEY -u OPENROUTER_API_KEY prepare-wow-account
+prepare-wow-viewer --account
 
 cat <<'MESSAGE'
 

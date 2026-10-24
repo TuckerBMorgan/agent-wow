@@ -124,6 +124,19 @@ class BatchJobTests(unittest.TestCase):
                     self.assertNotIn(other_key, os.environ)
                 secrets.get_secret_value.assert_called_once_with(SecretId=arn)
 
+    def test_deepseek_supervisor_uses_openrouter_and_records_its_harness(self):
+        environment = {'AGENT_WOW_HARNESS': 'deepseek', 'DEEPSEEK_MODEL': 'deepseek/test',
+                       'DEEPSEEK_EFFORT': 'high', 'OPENROUTER_API_KEY': FAKE_KEY,
+                       'AWS_RESULTS_BUCKET': 'test-results', 'AWS_BATCH_JOB_ID': 'test-job'}
+        with mock.patch.dict(os.environ, environment, clear=True), \
+             mock.patch.object(WRAPPER.boto3, 'client', return_value=self.client), \
+             mock.patch.object(WRAPPER, 'run', return_value=0):
+            self.assertEqual(WRAPPER.main(), 0)
+            self.results.status('running')
+        self.assertEqual(self.statuses()[-1]['harness'], 'deepseek')
+        self.assertEqual(self.statuses()[-1]['model_override'], 'deepseek/test')
+        self.assertEqual(self.statuses()[-1]['provider'], 'openrouter')
+
     def test_skips_symlink_files_directories_and_fifo(self):
         outside = Path(self.directory.name) / 'private'
         outside.mkdir()
@@ -139,6 +152,24 @@ class BatchJobTests(unittest.TestCase):
 
         self.assertEqual(set(self.client.objects), {'runs/test-job/journal/real.txt'})
 
+    def test_subscription_uses_injected_token_and_redacts_exported_logs(self):
+        environment = {'AGENT_WOW_HARNESS':'claude','CLAUDE_AUTH_MODE':'subscription',
+                       'CLAUDE_MODEL':'claude-opus-5-5','CLAUDE_EFFORT':'medium',
+                       'CLAUDE_CODE_OAUTH_TOKEN':FAKE_KEY,
+                       'AWS_RESULTS_BUCKET':'test-results','AWS_BATCH_JOB_ID':'test-job'}
+        with mock.patch.dict(os.environ, environment, clear=True), \
+             mock.patch.object(WRAPPER.boto3,'client',return_value=self.client) as clients, \
+             mock.patch.object(WRAPPER,'run',return_value=0):
+            self.assertEqual(WRAPPER.main(), 0)
+            clients.assert_called_once_with('s3',config=mock.ANY)
+            results = WRAPPER.Results(self.client,'test-results','test-job',self.workspace)
+            self.write('logs/agent/run/agent.log',FAKE_KEY.encode())
+            self.assertTrue(results.snapshot())
+            results.status('running')
+        self.assertEqual(self.client.objects['runs/test-job/logs/agent/run/agent.log'],b'[REDACTED]')
+        self.assertEqual(self.statuses()[-1]['provider'],'claude-subscription')
+        self.assertEqual(self.statuses()[-1]['harness'],'claude')
+
     def test_skips_symlink_in_logs_parent(self):
         outside = Path(self.directory.name) / 'private-logs'
         (outside / 'agent').mkdir(parents=True)
@@ -149,6 +180,25 @@ class BatchJobTests(unittest.TestCase):
         self.assertTrue(self.results.snapshot())
 
         self.assertEqual(set(self.client.objects), {'runs/test-job/journal/real.txt'})
+
+    def test_codex_account_uses_injected_login_and_redacts_each_oauth_token(self):
+        auth = {'auth_mode': 'chatgpt', 'tokens': {'access_token': 'fake-access',
+                'refresh_token': 'fake-refresh', 'id_token': 'fake-id'}}
+        environment = {'CODEX_AUTH_MODE': 'subscription', 'CODEX_MODEL_PROVIDER': 'openai',
+                       'CODEX_AUTH_JSON': json.dumps(auth), 'CODEX_SECRET_ARN': 'unused-api-secret',
+                       'AWS_RESULTS_BUCKET': 'test-results', 'AWS_BATCH_JOB_ID': 'test-job'}
+        with mock.patch.dict(os.environ, environment, clear=True), \
+                mock.patch.object(WRAPPER.boto3, 'client', return_value=self.client) as clients, \
+                mock.patch.object(WRAPPER, 'run', return_value=0):
+            self.assertEqual(WRAPPER.main(), 0)
+            clients.assert_called_once_with('s3', config=mock.ANY)
+            results = WRAPPER.Results(self.client, 'test-results', 'test-job', self.workspace)
+            self.write('logs/agent/run/agent.log', b'fake-access fake-refresh fake-id')
+            results.snapshot()
+            results.status('running')
+        self.assertEqual(self.client.objects['runs/test-job/logs/agent/run/agent.log'],
+                         b'[REDACTED] [REDACTED] [REDACTED]')
+        self.assertEqual(self.statuses()[-1]['provider'], 'codex-subscription')
 
     def test_export_failure_does_not_mark_file_uploaded_so_it_can_retry(self):
         self.write('journal/quest.json')

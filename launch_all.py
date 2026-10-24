@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Queue every race/class pairing; AWS Batch starts jobs as capacity opens.
 
-Uses the existing image and the same CODEX_* settings as launch.py.
+Uses the existing image and the same model/effort settings as launch.py.
 Each invocation submits a fresh set of jobs.
 """
 
@@ -10,23 +10,25 @@ import os
 import sqlite3
 import sys
 
-from launch import AwsError, container_overrides, submit_job
+from launch import AwsError, JOB_DEFINITIONS, container_overrides, submit_job
 from race_classes import RACE_CLASSES
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--harness', choices=JOB_DEFINITIONS, default='codex')
     parser.add_argument('--region', default='us-west-2')
     args = parser.parse_args()
-    definition = os.environ.get('WOW_JOB_DEFINITION', 'agent-wow')
+    name = JOB_DEFINITIONS[args.harness]
+    definition = os.environ.get('WOW_JOB_DEFINITION', name)
     try:
-        overrides = container_overrides(None)
+        overrides = container_overrides(None, args.harness)
         for race, classes in RACE_CLASSES.items():
             for character_class in classes:
                 prompt = (f'Create one {race.replace("-", " ")} {character_class.replace("-", " ")} '
                           'and complete the starting area.')
                 overrides['command'] = ['run-wow-agent', prompt]
-                job = submit_job(args.region, f'agent-wow-{race}-{character_class}', definition, overrides)
+                job = submit_job(args.region, f'{name}-{race}-{character_class}', definition, overrides)
                 print(f'{race} / {character_class}: {job["jobId"]}', flush=True)
         print('All pairings queued. AWS Batch will run them as capacity becomes available.')
         return 0

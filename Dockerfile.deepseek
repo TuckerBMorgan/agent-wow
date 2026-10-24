@@ -1,0 +1,12 @@
+# Reuse the tested game/toolchain environment; only the harness and supervisor change.
+ARG AGENT_BASE_IMAGE=143551238491.dkr.ecr.us-west-2.amazonaws.com/agent-wow@sha256:28eae4f2e7ea7c831e957ac23e5082253ca58bf1a0428a0e10c660f77133be20
+FROM ${AGENT_BASE_IMAGE}
+
+ARG DSH_VERSION=0.2.1-rc.2
+RUN npm install --global "@deepseek-ai/dsh@${DSH_VERSION}" \
+    && npm cache clean --force \
+    && dsh --profile headless --help
+
+COPY --chmod=755 docker/run_deepseek.py /usr/local/bin/run-wow-agent
+COPY --chmod=755 docker/run_batch_job.py /usr/local/bin/run-batch-job
+ENV AGENT_WOW_HARNESS=deepseek

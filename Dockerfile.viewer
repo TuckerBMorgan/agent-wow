@@ -1,0 +1,16 @@
+# Reuse the tested agent image; only the spectator setup changes.
+ARG AGENT_BASE_IMAGE=143551238491.dkr.ecr.us-west-2.amazonaws.com/agent-wow:build-20261021T201335Z
+FROM ${AGENT_BASE_IMAGE}
+COPY --chmod=755 docker/prepare_viewer.py /usr/local/bin/prepare-wow-viewer
+RUN python3 - <<'PY'
+from pathlib import Path
+compose = Path('/opt/server/compose.yaml')
+compose.write_text(compose.read_text().replace(
+    'image: acore/ac-wotlk-worldserver:master',
+    'image: ${AGENT_WOW_WORLD_IMAGE:-acore/ac-wotlk-worldserver:master}'))
+startup = Path('/usr/local/bin/start-agent-workspace')
+text = startup.read_text()
+text = text.replace('"${compose[@]}" up -d', 'prepare-wow-viewer --image\n"${compose[@]}" up -d')
+text = text.replace('prepare-wow-account\n', 'prepare-wow-account\nprepare-wow-viewer --account\n')
+startup.write_text(text)
+PY

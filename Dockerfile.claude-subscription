@@ -1,0 +1,9 @@
+# Keep the game environment and Claude Code version identical to the API comparison.
+ARG AGENT_BASE_IMAGE=143551238491.dkr.ecr.us-west-2.amazonaws.com/agent-wow@sha256:28eae4f2e7ea7c831e957ac23e5082253ca58bf1a0428a0e10c660f77133be20
+FROM ${AGENT_BASE_IMAGE}
+
+COPY --chmod=755 docker/run_claude.py /usr/local/bin/run-wow-agent
+COPY --chmod=755 docker/run_batch_job.py /usr/local/bin/run-batch-job
+# The game services do not need the subscription credential.
+RUN sed -i 's/env -u CODEX_API_KEY/env -u CLAUDE_CODE_OAUTH_TOKEN -u CODEX_API_KEY/g' /usr/local/bin/start-agent-workspace
+ENV AGENT_WOW_HARNESS=claude CLAUDE_AUTH_MODE=subscription CLAUDE_MODEL=claude-opus-5-5 CLAUDE_EFFORT=medium
