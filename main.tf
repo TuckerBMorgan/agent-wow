@@ -171,45 +171,38 @@ resource "aws_s3_bucket_policy" "results" {
 }
 
 # EC2 hosts ECS; the job itself gets only results-upload access.
-resource "aws_iam_role" "instance" {
-  name_prefix = "agent-wow-instance-"
+resource "aws_iam_role" "agent" {
+  for_each = {
+    instance  = "ec2.amazonaws.com"
+    execution = "ecs-tasks.amazonaws.com"
+    job       = "ecs-tasks.amazonaws.com"
+  }
+  name_prefix = "agent-wow-${each.key}-"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
       Effect    = "Allow", Action = "sts:AssumeRole"
-      Principal = { Service = "ec2.amazonaws.com" }
+      Principal = { Service = each.value }
     }]
   })
 }
 
 resource "aws_iam_role_policy_attachment" "instance" {
-  role       = aws_iam_role.instance.name
+  role       = aws_iam_role.agent["instance"].name
   policy_arn = "arn:${data.aws_partition.current.partition}:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
 }
 
 resource "aws_iam_instance_profile" "agent" {
   name_prefix = "agent-wow-"
-  role        = aws_iam_role.instance.name
+  role        = aws_iam_role.agent["instance"].name
 }
 
 locals {
-  task_trust = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect    = "Allow", Action = "sts:AssumeRole"
-      Principal = { Service = "ecs-tasks.amazonaws.com" }
-    }]
-  })
   image_uri = "${aws_ecr_repository.agent.repository_url}:${var.image_tag}"
 }
 
-resource "aws_iam_role" "execution" {
-  name_prefix        = "agent-wow-execution-"
-  assume_role_policy = local.task_trust
-}
-
 resource "aws_iam_role_policy" "execution" {
-  role = aws_iam_role.execution.id
+  role = aws_iam_role.agent["execution"].id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -235,13 +228,8 @@ resource "aws_iam_role_policy" "execution" {
   })
 }
 
-resource "aws_iam_role" "job" {
-  name_prefix        = "agent-wow-job-"
-  assume_role_policy = local.task_trust
-}
-
 resource "aws_iam_role_policy" "job" {
-  role = aws_iam_role.job.id
+  role = aws_iam_role.agent["job"].id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -305,21 +293,12 @@ resource "aws_batch_compute_environment" "agent" {
   ]
 }
 
-resource "aws_batch_job_queue" "agent" {
-  name     = "agent-wow"
-  state    = "ENABLED"
-  priority = 1
-  compute_environment_order {
-    order               = 1
-    compute_environment = aws_batch_compute_environment.agent.arn
-  }
-}
-
 # Tests take available capacity ahead of the normal queue; running jobs continue.
-resource "aws_batch_job_queue" "test" {
-  name     = "agent-wow-test"
+resource "aws_batch_job_queue" "agent" {
+  for_each = { agent-wow = 1, agent-wow-test = 100 }
+  name     = each.key
   state    = "ENABLED"
-  priority = 100
+  priority = each.value
   compute_environment_order {
     order               = 1
     compute_environment = aws_batch_compute_environment.agent.arn
@@ -328,17 +307,22 @@ resource "aws_batch_job_queue" "test" {
 
 # Both harnesses use the same game image, resources, logging, and result storage.
 # ECS supplies only the selected account login; the gameplay role cannot fetch it.
-locals {
-  job_environment = [
-    { name = "AWS_DEFAULT_REGION", value = var.aws_region },
-    { name = "AWS_RESULTS_BUCKET", value = aws_s3_bucket.results.id }
-  ]
-  job_container = {
+resource "aws_batch_job_definition" "subscription" {
+  for_each = {
+    codex  = { name = "CODEX_AUTH_JSON", valueFrom = aws_secretsmanager_secret.codex_subscription.arn }
+    claude = { name = "CLAUDE_CODE_OAUTH_TOKEN", valueFrom = aws_secretsmanager_secret.claude_subscription.arn }
+  }
+  name                  = "agent-wow-${each.key}-subscription"
+  type                  = "container"
+  platform_capabilities = ["EC2"]
+  retry_strategy { attempts = 1 }
+  timeout { attempt_duration_seconds = var.job_timeout_seconds }
+  container_properties = jsonencode({
     image            = local.image_uri
     command          = ["run-wow-agent"]
     privileged       = true
-    jobRoleArn       = aws_iam_role.job.arn
-    executionRoleArn = aws_iam_role.execution.arn
+    jobRoleArn       = aws_iam_role.agent["job"].arn
+    executionRoleArn = aws_iam_role.agent["execution"].arn
     resourceRequirements = [
       { type = "VCPU", value = "8" },
       { type = "MEMORY", value = "28672" }
@@ -351,25 +335,13 @@ locals {
         "awslogs-stream-prefix" = "agent-wow"
       }
     }
-  }
-}
-
-resource "aws_batch_job_definition" "subscription" {
-  for_each = {
-    codex  = { name = "CODEX_AUTH_JSON", valueFrom = aws_secretsmanager_secret.codex_subscription.arn }
-    claude = { name = "CLAUDE_CODE_OAUTH_TOKEN", valueFrom = aws_secretsmanager_secret.claude_subscription.arn }
-  }
-  name                  = "agent-wow-${each.key}-subscription"
-  type                  = "container"
-  platform_capabilities = ["EC2"]
-  retry_strategy { attempts = 1 }
-  timeout { attempt_duration_seconds = var.job_timeout_seconds }
-  container_properties = jsonencode(merge(local.job_container, {
-    environment = concat(local.job_environment, [
+    environment = [
+      { name = "AWS_DEFAULT_REGION", value = var.aws_region },
+      { name = "AWS_RESULTS_BUCKET", value = aws_s3_bucket.results.id },
       { name = "AGENT_WOW_HARNESS", value = each.key }
-    ])
+    ]
     secrets = [each.value]
-  }))
+  })
   depends_on = [aws_iam_role_policy.execution, aws_iam_role_policy.job]
 }
 
@@ -387,10 +359,10 @@ output "codex_subscription_secret_arn" {
   value = aws_secretsmanager_secret.codex_subscription.arn
 }
 output "job_queue" {
-  value = aws_batch_job_queue.agent.name
+  value = aws_batch_job_queue.agent["agent-wow"].name
 }
 output "test_job_queue" {
-  value = aws_batch_job_queue.test.name
+  value = aws_batch_job_queue.agent["agent-wow-test"].name
 }
 output "job_definitions" {
   value = { for harness, definition in aws_batch_job_definition.subscription : harness => definition.arn }
