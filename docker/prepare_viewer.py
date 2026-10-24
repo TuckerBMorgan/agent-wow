@@ -4,13 +4,12 @@ import base64
 import json
 import os
 from pathlib import Path
-import secrets
 import subprocess
 import sys
 import time
 
 import boto3
-import docker
+from prepare_wow_account import ensure_account, worldserver
 
 
 def prepare_image():
@@ -25,37 +24,10 @@ def prepare_image():
 
 
 def prepare_account(root=Path('/run/agent-wow-observer'), instructions=Path('/workspace/AGENTS.md')):
-    root.mkdir(mode=0o700, exist_ok=True)
-    auth = root / 'auth.json'
-    if not auth.exists():
-        # AzerothCore's legacy account protocol limits passwords to 16 characters.
-        auth.write_text(json.dumps({'username': 'WATCHER', 'password': secrets.token_hex(8)}))
-        auth.chmod(0o600)
-    account = json.loads(auth.read_text())
-    if account.get('username') != 'WATCHER' or not account.get('password', '').isascii() or not account.get('password', '').isalnum() or len(account['password']) > 16:
-        raise ValueError('Invalid observer account file.')
     env = dict(os.environ, AGENT_WOW_CONFIG_DIR=str(root), AGENT_WOW_DATA_DIR=str(root / 'data'))
-
-    def client(*args):
-        return subprocess.run(['agent-wow', *args], env=env, capture_output=True, text=True, timeout=30)
-
-    world, = docker.from_env().containers.list(filters={'label': [
-        'com.docker.compose.project=agent-wow-world', 'com.docker.compose.service=worldserver']})
-    # Use the server's supported console commands, never SQL or game-state edits.
-    if client('auth', 'login', '--timeout', '10s').returncode:
-        connection = world.attach_socket(params={'stdin': True, 'stream': True})
-        try:
-            connection._sock.sendall(f"account create {account['username']} {account['password']}\n".encode())
-        finally:
-            connection.close()
-        for _ in range(30):
-            time.sleep(1)
-            if client('auth', 'login', '--timeout', '10s').returncode == 0:
-                break
-        else:
-            raise RuntimeError('Observer authentication failed; credentials omitted.')
+    account, client = ensure_account(root, 'WATCHER', env)
     # Authentication confirms account creation has committed before granting access.
-    connection = world.attach_socket(params={'stdin': True, 'stdout': True, 'stream': True})
+    connection = worldserver().attach_socket(params={'stdin': True, 'stdout': True, 'stream': True})
     try:
         connection._sock.settimeout(30)
         connection._sock.sendall(b'account set gmlevel WATCHER 2 -1\n')

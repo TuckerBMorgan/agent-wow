@@ -12,7 +12,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import re
 import shutil
 import sqlite3
 import subprocess
@@ -20,10 +19,10 @@ import sys
 import time
 
 from jobs import database, record_job
+from agent_common import HARNESSES, harness_spec, model_settings
 
 
-JOB_DEFINITIONS = {'codex': 'agent-wow-codex-subscription',
-                   'claude': 'agent-wow-claude-subscription'}
+JOB_DEFINITIONS = {harness: f'agent-wow-{harness}-subscription' for harness in HARNESSES}
 
 
 class AwsError(RuntimeError):
@@ -149,24 +148,12 @@ def follow(job_id, region, log_group, poll_seconds=5, final_wait_seconds=15):
 
 
 def container_overrides(prompt, harness='codex'):
-    if harness == 'claude':
-        model_name, effort_name, default_model = 'CLAUDE_MODEL', 'CLAUDE_EFFORT', 'claude-opus-5-5'
-        model_pattern = r'claude-[A-Za-z0-9.-]+'
-    elif harness == 'codex':
-        model_name, effort_name, default_model = 'CODEX_MODEL', 'CODEX_REASONING_EFFORT', 'gpt-6.1-sol'
-        model_pattern = r'gpt-[A-Za-z0-9.-]+'
-    else:
-        raise ValueError('Harness must be codex or claude.')
-    model = os.environ.get(model_name, default_model)
-    effort = os.environ.get(effort_name, 'medium')
-    if not re.fullmatch(model_pattern, model):
-        raise ValueError(f'{model_name} must be a native model ID for {harness}.')
-    if effort not in ('low', 'medium', 'high', 'xhigh', 'max'):
-        raise ValueError(f'{effort_name} must be low, medium, high, xhigh, or max.')
+    spec = harness_spec(harness)
+    model, effort = model_settings(harness)
     overrides = {'environment': [
         {'name': 'AGENT_WOW_HARNESS', 'value': harness},
-        {'name': model_name, 'value': model},
-        {'name': effort_name, 'value': effort},
+        {'name': spec['model_env'], 'value': model},
+        {'name': spec['effort_env'], 'value': effort},
     ]}
     if prompt is not None:
         if not prompt.strip():

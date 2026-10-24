@@ -10,15 +10,7 @@ import time
 
 import boto3
 from botocore.config import Config
-
-
-def agent_settings():
-    harness = os.environ.get('AGENT_WOW_HARNESS', 'codex')
-    if harness == 'claude':
-        return (harness, 'claude-subscription', os.environ.get('CLAUDE_MODEL'), os.environ.get('CLAUDE_EFFORT'))
-    if harness == 'codex':
-        return (harness, 'codex-subscription', os.environ.get('CODEX_MODEL'), os.environ.get('CODEX_REASONING_EFFORT'))
-    raise ValueError('AGENT_WOW_HARNESS must be codex or claude.')
+from agent_common import credential_redactor, harness_spec
 
 
 class Results:
@@ -27,35 +19,22 @@ class Results:
         self.bucket = bucket
         self.prefix = f'runs/{job_id}'
         self.workspace = workspace
-        self.secrets = sorted({
-            value.encode() for name in ('CODEX_API_KEY', 'OPENAI_API_KEY',
-                                        'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN',
-                                        'CODEX_AUTH_JSON')
-            if (value := os.environ.get(name))
-        }, key=len, reverse=True)
-        # OAuth tokens must also be redacted individually if a tool prints one.
-        auth = os.environ.get('CODEX_AUTH_JSON')
-        if auth:
-            tokens = json.loads(auth).get('tokens', {})
-            self.secrets = sorted(set(self.secrets) | {
-                value.encode() for value in tokens.values() if isinstance(value, str) and value
-            }, key=len, reverse=True)
+        self.redact = credential_redactor()
         self.uploaded = {}
 
     def put(self, key, data):
-        for secret in self.secrets:
-            data = data.replace(secret, b'[REDACTED]')
-        self.client.put_object(Bucket=self.bucket, Key=f'{self.prefix}/{key}', Body=data)
+        self.client.put_object(Bucket=self.bucket, Key=f'{self.prefix}/{key}', Body=self.redact(data))
 
     def status(self, state, exit_code=None):
-        harness, provider, model, effort = agent_settings()
+        harness = os.environ.get('AGENT_WOW_HARNESS', 'codex')
+        spec = harness_spec(harness)
         self.put('status.json', json.dumps({
             'state': state,
             'process_exit_code': exit_code,
             'harness': harness,
-            'provider': provider,
-            'model_override': model,
-            'reasoning_effort_override': effort,
+            'provider': f'{harness}-subscription',
+            'model_override': os.environ.get(spec['model_env']),
+            'reasoning_effort_override': os.environ.get(spec['effort_env']),
             'updated_at': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
             'quest_completion': 'Verify server-confirmed turn-ins in journal; exit 0 alone is not proof.',
         }).encode())
@@ -163,8 +142,7 @@ def main():
     if not bucket or not job_id:
         print('Batch requires AWS_RESULTS_BUCKET and AWS_BATCH_JOB_ID.', flush=True)
         return 1
-    harness, _, _, _ = agent_settings()
-    login = 'CODEX_AUTH_JSON' if harness == 'codex' else 'CLAUDE_CODE_OAUTH_TOKEN'
+    login = harness_spec(os.environ.get('AGENT_WOW_HARNESS', 'codex'))['auth_env']
     # ECS injects the account login. Jobs never fetch credentials themselves.
     if not os.environ.get(login, '').strip():
         print(f'Batch requires a nonempty {login}.', flush=True)

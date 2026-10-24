@@ -362,9 +362,7 @@ resource "aws_batch_job_definition" "codex_subscription" {
   timeout { attempt_duration_seconds = var.job_timeout_seconds }
   container_properties = jsonencode(merge(local.job_container, {
     environment = concat(local.job_environment, [
-      { name = "AGENT_WOW_HARNESS", value = "codex" },
-      { name = "CODEX_MODEL", value = "gpt-6.1-sol" },
-      { name = "CODEX_REASONING_EFFORT", value = "medium" }
+      { name = "AGENT_WOW_HARNESS", value = "codex" }
     ])
     secrets = [{ name = "CODEX_AUTH_JSON", valueFrom = aws_secretsmanager_secret.codex_subscription.arn }]
   }))
@@ -379,9 +377,7 @@ resource "aws_batch_job_definition" "claude_subscription" {
   timeout { attempt_duration_seconds = var.job_timeout_seconds }
   container_properties = jsonencode(merge(local.job_container, {
     environment = concat(local.job_environment, [
-      { name = "AGENT_WOW_HARNESS", value = "claude" },
-      { name = "CLAUDE_MODEL", value = "claude-opus-5-5" },
-      { name = "CLAUDE_EFFORT", value = "medium" }
+      { name = "AGENT_WOW_HARNESS", value = "claude" }
     ])
     secrets = [{ name = "CLAUDE_CODE_OAUTH_TOKEN", valueFrom = aws_secretsmanager_secret.claude_subscription.arn }]
   }))

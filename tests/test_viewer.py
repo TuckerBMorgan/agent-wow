@@ -1,5 +1,5 @@
 import contextlib
-import importlib.util
+import importlib
 import io
 import json
 import os
@@ -68,10 +68,22 @@ class ObserverTests(unittest.TestCase):
         self.world = MagicMock()
         self.world.attach_socket.return_value._sock.recv.return_value = b'You change security level of account WATCHER to 2.'
         self.docker.from_env.return_value.containers.list.return_value = [self.world]
-        spec = importlib.util.spec_from_file_location('observer_helper', Path(__file__).resolve().parents[1] / 'docker/prepare_viewer.py')
-        self.module = importlib.util.module_from_spec(spec)
-        with patch.dict(sys.modules, {'boto3': self.aws, 'docker': self.docker}):
-            spec.loader.exec_module(self.module)
+        with patch.dict(sys.modules, {'boto3': self.aws, 'docker': self.docker}), \
+                patch.object(sys, 'path', [str(Path(__file__).resolve().parents[1] / 'docker'), *sys.path]):
+            self.accounts = importlib.import_module('prepare_wow_account')
+            self.module = importlib.import_module('prepare_viewer')
+
+    def test_saved_player_credentials_are_reused_but_cannot_be_used_for_observer(self):
+        auth = self.root / 'auth.json'
+        original = json.dumps({'username': 'EXISTING', 'password': 'AlreadySaved123'})
+        auth.write_text(original)
+        with patch.object(self.accounts.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)):
+            account, _ = self.accounts.ensure_account(self.root)
+            self.assertEqual(account['username'], 'EXISTING')
+            with self.assertRaises(ValueError):
+                self.accounts.ensure_account(self.root, 'WATCHER')
+        self.assertEqual(auth.read_text(), original)
+        self.world.attach_socket.assert_not_called()
 
     def test_observer_creation_uses_separate_account_and_no_agent_mutations(self):
         results = [subprocess.CompletedProcess([], 1), subprocess.CompletedProcess([], 0),

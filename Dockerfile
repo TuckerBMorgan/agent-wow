@@ -189,13 +189,14 @@ YAML
 # Credentials are generated on first launch, not baked into the image.
 # The server's interactive console may echo its account-creation command;
 # treat the nested server logs as private alongside the saved account file.
-COPY --chmod=755 docker/prepare_wow_account.py /usr/local/bin/prepare-wow-account
+COPY --chmod=755 docker/prepare_wow_account.py /usr/local/bin/prepare_wow_account.py
 COPY --chmod=755 docker/prepare_viewer.py /usr/local/bin/prepare-wow-viewer
 
 COPY <<'TASK' /opt/orc-quest-task.txt
 Create an night elf druid and complete every available quest in the starting area
 TASK
 
+COPY agent_common.py /usr/local/bin/agent_common.py
 COPY --chmod=755 docker/run_agent.py /usr/local/bin/run-wow-agent
 
 RUN /opt/venv/bin/pip install --no-cache-dir boto3
@@ -316,7 +317,7 @@ if [[ "$ready" != true ]]; then
     echo 'Game server startup timed out. Inspect docker compose logs in /workspace/server.' >&2
     exit 1
 fi
-env -u CODEX_AUTH_JSON -u CLAUDE_CODE_OAUTH_TOKEN prepare-wow-account
+env -u CODEX_AUTH_JSON -u CLAUDE_CODE_OAUTH_TOKEN prepare_wow_account.py
 env -u CODEX_AUTH_JSON -u CLAUDE_CODE_OAUTH_TOKEN prepare-wow-viewer --account
 
 cat <<'MESSAGE'

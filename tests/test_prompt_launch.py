@@ -127,8 +127,8 @@ class PromptLaunchTests(unittest.TestCase):
             executable.chmod(0o755)
         self.project = self.root / 'project'
         self.project.mkdir()
-        shutil.copyfile(REPOSITORY / 'launch.py', self.project / 'launch.py')
-        shutil.copyfile(REPOSITORY / 'jobs.py', self.project / 'jobs.py')
+        for name in ('launch.py', 'jobs.py', 'agent_common.py'):
+            shutil.copyfile(REPOSITORY / name, self.project / name)
         (self.project / 'launch-runner.py').write_text(RUNNER)
         # Never inherit real credentials, profiles, keys, or user configuration.
         self.env = {

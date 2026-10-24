@@ -6,12 +6,13 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-import re
 import signal
 import subprocess
 import sys
 import tempfile
 import time
+
+from agent_common import credential_redactor, model_settings
 
 
 def prepare_login(home):
@@ -35,7 +36,6 @@ def prepare_login(home):
     for name in ('CODEX_API_KEY', 'OPENAI_API_KEY', 'OPENAI_BASE_URL', 'CLAUDE_CODE_OAUTH_TOKEN'):
         os.environ.pop(name, None)
     os.environ.update(CODEX_HOME=str(home), CODEX_MODEL_PROVIDER='openai')
-    return [value for value in tokens.values() if isinstance(value, str) and value]
 
 
 def log_claude_event(event, emit):
@@ -70,27 +70,15 @@ def log_claude_event(event, emit):
 def run(prompt=None, workspace=Path('/workspace'), default_task=Path('/opt/orc-quest-task.txt'),
         home=Path('/root/.codex')):
     harness = os.environ.get('AGENT_WOW_HARNESS', 'codex')
-    if harness == 'codex':
-        model_name, default_model, effort_name = 'CODEX_MODEL', 'gpt-6.1-sol', 'CODEX_REASONING_EFFORT'
-        label = 'Codex'
-    elif harness == 'claude':
-        model_name, default_model, effort_name = 'CLAUDE_MODEL', 'claude-opus-5-5', 'CLAUDE_EFFORT'
-        label = 'Claude'
-    else:
-        raise ValueError('AGENT_WOW_HARNESS must be codex or claude.')
-    model = os.environ.get(model_name, default_model)
-    effort = os.environ.get(effort_name, 'medium')
-    prefix = 'gpt' if harness == 'codex' else 'claude'
-    if not re.fullmatch(prefix + r'-[A-Za-z0-9.-]+', model):
-        raise ValueError(f'{model_name} must be a native {label} model ID.')
-    if effort not in ('low', 'medium', 'high', 'xhigh', 'max'):
-        raise ValueError(f'{effort_name} must be low, medium, high, xhigh, or max.')
+    model, effort = model_settings(harness)
+    label = harness.capitalize()
     if prompt is not None and not prompt.strip():
         raise ValueError('Prompt must not be blank.')
 
     os.umask(0o077)
+    redact = credential_redactor()
     if harness == 'codex':
-        secrets = prepare_login(home)
+        prepare_login(home)
         env = dict(os.environ)
         for name in ('.cache', '.docker', 'go'):
             (home.parent / name).mkdir(parents=True, exist_ok=True)
@@ -98,7 +86,6 @@ def run(prompt=None, workspace=Path('/workspace'), default_task=Path('/opt/orc-q
         key = os.environ.get('CLAUDE_CODE_OAUTH_TOKEN', '')
         if not key.strip():
             raise ValueError('A nonempty CLAUDE_CODE_OAUTH_TOKEN is required.')
-        secrets = [key]
         env = dict(os.environ, DISABLE_AUTOUPDATER='1',
                    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1', CLAUDE_CODE_SUBAGENT_MODEL=model)
         # Select exactly one billing source. Never fall back to API credits.
@@ -149,11 +136,6 @@ def run(prompt=None, workspace=Path('/workspace'), default_task=Path('/opt/orc-q
     try:
         with (run_dir / 'agent.log').open('w', buffering=1) as log, task.open('rb') as stdin, \
              ((run_dir / 'events.jsonl').open('w', buffering=1) if harness == 'claude' else nullcontext()) as events:
-            def redact(text):
-                for secret in secrets:
-                    text = text.replace(secret, '[REDACTED]')
-                return text
-
             def emit(text):
                 text = redact(text).rstrip('\n')
                 log.write(text + '\n')
