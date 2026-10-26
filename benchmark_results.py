@@ -110,6 +110,32 @@ def post(url, key, result):
             time.sleep(delay)
 
 
+def create_run(race, character_class, level, config):
+    from race_classes import RACE_CLASSES
+    if character_class not in RACE_CLASSES.get(race, ()) or not 1 <= level <= 80:
+        raise ValueError('Choose a supported race/class and a target level from 1 to 80.')
+    if config.exists():
+        raise ValueError('Config already exists; use a new filename for a new attempt.')
+    infrastructure = Path(__file__).resolve().parent / 'benchmark'
+    outputs = json.loads(subprocess.check_output(['tofu', f'-chdir={infrastructure}', 'output', '-json'], text=True))
+    key = secrets.token_urlsafe(32)
+    run_id = hashlib.sha256(key.encode()).hexdigest()
+    prompt = (f'create a {race.replace("-", " ")} {character_class.replace("-", " ")} '
+              f'and adventure until they are level {level}')
+    item = {k: {'S': v} for k, v in {'run_id': run_id, 'prompt': prompt,
+            'race': race.replace('-', ' '), 'class': character_class.replace('-', ' ')}.items()}
+    item['target_level'] = {'N': str(level)}
+    subprocess.run(['aws', 'dynamodb', 'put-item', '--table-name', outputs['table']['value'],
+                    '--region', outputs['region']['value'], '--item', json.dumps(item),
+                    '--condition-expression', 'attribute_not_exists(run_id)', '--no-cli-pager'], check=True)
+    os.umask(0o077)
+    config.parent.mkdir(parents=True, exist_ok=True)
+    with config.open('x') as file:
+        json.dump({'url': outputs['url']['value'], 'key': key, 'prompt': prompt}, file, indent=2)
+        file.write('\n')
+    print(f'Run {run_id} created. Private config: {config}')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -125,30 +151,11 @@ def main():
     if args.command == 'send':
         config = json.loads(args.config.read_text())
         print(post(config['url'], config['key'], json.loads(args.result.read_text())))
-        return
-    from race_classes import RACE_CLASSES
-    if args.character_class not in RACE_CLASSES.get(args.race, ()) or not 1 <= args.level <= 80:
-        parser.error('Choose a supported race/class and a target level from 1 to 80.')
-    if args.config.exists():
-        parser.error('Config already exists; use a new filename for a new attempt.')
-    infrastructure = Path(__file__).resolve().parent / 'benchmark'
-    outputs = json.loads(subprocess.check_output(['tofu', f'-chdir={infrastructure}', 'output', '-json'], text=True))
-    key = secrets.token_urlsafe(32)
-    run_id = hashlib.sha256(key.encode()).hexdigest()
-    prompt = (f'Create one {args.race.replace("-", " ")} {args.character_class.replace("-", " ")} '
-              f'and adventure until you are level {args.level}.')
-    item = {k: {'S': v} for k, v in {'run_id': run_id, 'prompt': prompt,
-            'race': args.race.replace('-', ' '), 'class': args.character_class.replace('-', ' ')}.items()}
-    item['target_level'] = {'N': str(args.level)}
-    subprocess.run(['aws', 'dynamodb', 'put-item', '--table-name', outputs['table']['value'],
-                    '--region', outputs['region']['value'], '--item', json.dumps(item),
-                    '--condition-expression', 'attribute_not_exists(run_id)', '--no-cli-pager'], check=True)
-    os.umask(0o077)
-    args.config.parent.mkdir(parents=True, exist_ok=True)
-    with args.config.open('x') as file:
-        json.dump({'url': outputs['url']['value'], 'key': key, 'prompt': prompt}, file, indent=2)
-        file.write('\n')
-    print(f'Run {run_id} created. Private config: {args.config}')
+    else:
+        try:
+            create_run(args.race, args.character_class, args.level, args.config)
+        except ValueError as error:
+            parser.error(str(error))
 
 
 if __name__ == '__main__':
