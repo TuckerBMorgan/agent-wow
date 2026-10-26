@@ -38,15 +38,17 @@ def handler(event, context):
             return response(403, 'Invalid read key')
         db = table()
         items = []
-        query = {'ProjectionExpression': 'benchmark_page,benchmark_snapshot', 'ConsistentRead': True}
+        query = {'ProjectionExpression': 'run_id,race,#class,target_level,prompt,#result',
+                 'ExpressionAttributeNames': {'#class': 'class', '#result': 'result'}, 'ConsistentRead': True}
         while True:
             page = db.scan(**query)
-            items.extend(item for item in page.get('Items', []) if item.get('benchmark_page'))
+            items.extend(item for item in page.get('Items', [])
+                         if item.get('result', {}).get('status') in ('succeeded', 'unverified')
+                         and item['result']['exit_code'] == 0)
             if not page.get('LastEvaluatedKey'):
                 break
             query['ExclusiveStartKey'] = page['LastEvaluatedKey']
-        rows = sorted((item['benchmark_page'] for item in items), key=lambda row: (row['race'], row['class'], row['agent']))
-        return response(200, {'rows': rows, 'checked_at': max((item['benchmark_snapshot'] for item in items), default=None)})
+        return response(200, {'rows': sorted(items, key=lambda row: row['result']['finished_at'], reverse=True)})
     if method != 'POST':
         return response(405, 'GET or POST required')
     if len(key) != 43:
@@ -82,7 +84,7 @@ def handler(event, context):
                   and character['class'].casefold() == row['class']
                   and character['level'] >= row['target_level'])
         result.update(character=character, status='succeeded' if passed else 'failed',
-                      job_id=str(data.get('job_id', ''))[:128])
+                      job_id=str(data.get('job_id', ''))[:128], timing='agent')
     except (ValueError, KeyError, TypeError, AttributeError, IndexError):
         return response(400, 'Invalid result')
     try:

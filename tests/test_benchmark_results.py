@@ -44,21 +44,26 @@ class BenchmarkTests(unittest.TestCase):
             self.assertEqual(results.handler(event, None)['statusCode'], 403)
         self.db.scan.assert_not_called()
 
-    def test_reader_returns_only_published_page_data_across_all_pages(self):
-        row = dict(agent='codex', race='orc', **{'class': 'warrior'}, minutes=Decimal('48.5'))
+    def test_completed_upload_appears_without_a_publishing_step(self):
+        self.assertEqual(self.call()['statusCode'], 200)
+        result = self.db.update_item.call_args.kwargs['ExpressionAttributeValues'][':result']
+        self.assertEqual(result['timing'], 'agent')
+        row = {**self.row, 'result': {**result, 'elapsed_ms': Decimal('2000')}}
+        historical = {**row, 'run_id': 'historical:job', 'target_level': None,
+                      'result': {**result, 'status': 'unverified', 'timing': 'job'}}
         self.db.scan.side_effect = [
-            {'Items': [{'key_hash': 'hidden'}, {'benchmark_page': row, 'benchmark_snapshot': '2026-10-23'}],
-             'LastEvaluatedKey': {'run_id': 'cursor'}}, {'Items': []},
+            {'Items': [self.row, {**row, 'result': {**result, 'status': 'failed'}}],
+             'LastEvaluatedKey': {'run_id': 'cursor'}}, {'Items': [row, historical]},
         ]
         event = {'requestContext': {'http': {'method': 'GET'}}, 'headers': {'authorization': 'Bearer private-reader'}}
         with patch.object(results, 'table', return_value=self.db), patch.dict(
                 os.environ, READ_KEY_HASH=hashlib.sha256(b'private-reader').hexdigest()):
             reply = results.handler(event, None)
         self.assertEqual(reply['statusCode'], 200)
-        self.assertEqual(json.loads(reply['body']), {'rows': [{**row, 'minutes': 48.5}], 'checked_at': '2026-10-23'})
+        self.assertEqual(json.loads(reply['body']), {'rows': [row, historical]})
         self.assertEqual(self.db.scan.call_args.kwargs['ExclusiveStartKey'], {'run_id': 'cursor'})
-        self.assertEqual(self.db.scan.call_args.kwargs['ProjectionExpression'], 'benchmark_page,benchmark_snapshot')
-        self.db.update_item.assert_not_called()
+        self.assertEqual(self.db.scan.call_args.kwargs['ProjectionExpression'],
+                         'run_id,race,#class,target_level,prompt,#result')
 
     def test_success_requires_saved_matching_character_and_target_level(self):
         for changes in ({}, {'exit_code': 1}, {'characters': []},
