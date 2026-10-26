@@ -25,14 +25,30 @@ def table():
 
 
 def response(code, status):
-    return {'statusCode': code, 'body': json.dumps({'status': status}),
-            'headers': {'content-type': 'application/json'}}
+    return {'statusCode': code, 'body': json.dumps({'status': status} if isinstance(status, str) else status, default=float),
+            'headers': {'content-type': 'application/json', 'cache-control': 'no-store'}}
 
 
 def handler(event, context):
-    if event.get('requestContext', {}).get('http', {}).get('method') != 'POST':
-        return response(405, 'POST required')
+    method = event.get('requestContext', {}).get('http', {}).get('method')
     key = event.get('headers', {}).get('authorization', '').removeprefix('Bearer ')
+    if method == 'GET':
+        read_hash = os.environ.get('READ_KEY_HASH', '')
+        if not read_hash or not secrets.compare_digest(hashlib.sha256(key.encode()).hexdigest(), read_hash):
+            return response(403, 'Invalid read key')
+        db = table()
+        items = []
+        query = {'ProjectionExpression': 'benchmark_page,benchmark_snapshot', 'ConsistentRead': True}
+        while True:
+            page = db.scan(**query)
+            items.extend(item for item in page.get('Items', []) if item.get('benchmark_page'))
+            if not page.get('LastEvaluatedKey'):
+                break
+            query['ExclusiveStartKey'] = page['LastEvaluatedKey']
+        rows = sorted((item['benchmark_page'] for item in items), key=lambda row: (row['race'], row['class'], row['agent']))
+        return response(200, {'rows': rows, 'checked_at': max((item['benchmark_snapshot'] for item in items), default=None)})
+    if method != 'POST':
+        return response(405, 'GET or POST required')
     if len(key) != 43:
         return response(403, 'Invalid key')
     run_id = hashlib.sha256(key.encode()).hexdigest()  # The key selects its only writable row.

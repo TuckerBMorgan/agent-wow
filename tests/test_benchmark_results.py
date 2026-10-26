@@ -1,5 +1,6 @@
 """Check row authorization, completion checks, and HTTP retries."""
 import hashlib
+from decimal import Decimal
 import json
 import os
 from pathlib import Path
@@ -31,6 +32,32 @@ class BenchmarkTests(unittest.TestCase):
 
     def test_key_cannot_write_another_row(self):
         self.assertEqual(self.call(key='b' * 43)['statusCode'], 403)
+        self.db.update_item.assert_not_called()
+
+    def test_read_access_is_separate_from_run_write_keys(self):
+        event = {'requestContext': {'http': {'method': 'GET'}}, 'headers': {}}
+        with patch.object(results, 'table', return_value=self.db), patch.dict(os.environ, READ_KEY_HASH=''):
+            self.assertEqual(results.handler(event, None)['statusCode'], 403)
+        with patch.object(results, 'table', return_value=self.db), patch.dict(
+                os.environ, READ_KEY_HASH=hashlib.sha256(b'private-reader').hexdigest()):
+            event['headers']['authorization'] = 'Bearer ' + self.key
+            self.assertEqual(results.handler(event, None)['statusCode'], 403)
+        self.db.scan.assert_not_called()
+
+    def test_reader_returns_only_published_page_data_across_all_pages(self):
+        row = dict(agent='codex', race='orc', **{'class': 'warrior'}, minutes=Decimal('48.5'))
+        self.db.scan.side_effect = [
+            {'Items': [{'key_hash': 'hidden'}, {'benchmark_page': row, 'benchmark_snapshot': '2026-10-23'}],
+             'LastEvaluatedKey': {'run_id': 'cursor'}}, {'Items': []},
+        ]
+        event = {'requestContext': {'http': {'method': 'GET'}}, 'headers': {'authorization': 'Bearer private-reader'}}
+        with patch.object(results, 'table', return_value=self.db), patch.dict(
+                os.environ, READ_KEY_HASH=hashlib.sha256(b'private-reader').hexdigest()):
+            reply = results.handler(event, None)
+        self.assertEqual(reply['statusCode'], 200)
+        self.assertEqual(json.loads(reply['body']), {'rows': [{**row, 'minutes': 48.5}], 'checked_at': '2026-10-23'})
+        self.assertEqual(self.db.scan.call_args.kwargs['ExclusiveStartKey'], {'run_id': 'cursor'})
+        self.assertEqual(self.db.scan.call_args.kwargs['ProjectionExpression'], 'benchmark_page,benchmark_snapshot')
         self.db.update_item.assert_not_called()
 
     def test_success_requires_saved_matching_character_and_target_level(self):

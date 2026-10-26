@@ -7,6 +7,7 @@ terraform {
 }
 
 variable "aws_region" { default = "us-west-2" }
+variable "read_key_hash" { default = "" }
 provider "aws" { region = var.aws_region }
 
 resource "aws_dynamodb_table" "runs" {
@@ -32,7 +33,7 @@ resource "aws_iam_role_policy" "results" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:UpdateItem"], Resource = aws_dynamodb_table.runs.arn
+      Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:Scan"], Resource = aws_dynamodb_table.runs.arn
     }]
   })
 }
@@ -56,7 +57,7 @@ resource "aws_lambda_function" "results" {
   filename         = data.archive_file.results.output_path
   source_code_hash = data.archive_file.results.output_base64sha256
   timeout          = 10
-  environment { variables = { TABLE = aws_dynamodb_table.runs.name } }
+  environment { variables = { TABLE = aws_dynamodb_table.runs.name, READ_KEY_HASH = var.read_key_hash } }
   depends_on = [aws_iam_role_policy.results, aws_iam_role_policy_attachment.logs]
 }
 
