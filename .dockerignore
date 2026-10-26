@@ -3,6 +3,7 @@
 !Dockerfile
 !.dockerignore
 !agent_common.py
+!benchmark_results.py
 !docker/
 !docker/prepare_wow_account.py
 !docker/run_batch_job.py

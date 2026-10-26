@@ -34,7 +34,7 @@ def credential_redactor():
     # Capture before a runner removes credentials from its child environment.
     values = {os.environ[name] for name in (
         'CODEX_API_KEY', 'OPENAI_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN',
-        'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CODEX_AUTH_JSON',
+        'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CODEX_AUTH_JSON', 'BENCHMARK_KEY',
     ) if os.environ.get(name)}
     try:
         tokens = json.loads(os.environ.get('CODEX_AUTH_JSON') or '{}').get('tokens', {})

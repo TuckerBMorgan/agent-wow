@@ -13,6 +13,7 @@ import tempfile
 import time
 
 from agent_common import credential_redactor, model_settings
+from benchmark_results import post
 
 
 def prepare_login(home):
@@ -77,6 +78,10 @@ def run(prompt=None, workspace=Path('/workspace'), default_task=Path('/opt/defau
 
     os.umask(0o077)
     redact = credential_redactor()
+    benchmark_url = os.environ.pop('BENCHMARK_URL', '')
+    benchmark_key = os.environ.pop('BENCHMARK_KEY', '')
+    if bool(benchmark_url) != bool(benchmark_key):
+        raise ValueError('Benchmark reporting requires both BENCHMARK_URL and BENCHMARK_KEY.')
     if harness == 'codex':
         prepare_login(home)
         env = dict(os.environ)
@@ -116,8 +121,6 @@ def run(prompt=None, workspace=Path('/workspace'), default_task=Path('/opt/defau
     else:
         command = ['claude', '-p', '--model', model, '--effort', effort,
                    '--dangerously-skip-permissions', '--output-format', 'stream-json', '--verbose']
-    started = time.monotonic()
-    started_at = datetime.now(timezone.utc).isoformat()
     child = None
     interrupted = 0
     result = None
@@ -143,6 +146,8 @@ def run(prompt=None, workspace=Path('/workspace'), default_task=Path('/opt/defau
 
             emit(f'{label} authentication: subscription; model: {model}; effort: {effort}')
             emit(f'Run log: {run_dir}/agent.log')
+            started = time.monotonic()
+            started_at = datetime.now(timezone.utc).isoformat()
             child = subprocess.Popen(command, cwd=workspace, env=env, stdin=stdin,
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                      text=True, encoding='utf-8', errors='replace', bufsize=1)
@@ -169,6 +174,8 @@ def run(prompt=None, workspace=Path('/workspace'), default_task=Path('/opt/defau
                 log_claude_event(event, emit)
             child.stdout.close()
             exit_code = child.wait()
+            elapsed_ms = round((time.monotonic() - started) * 1000)
+            finished_at = datetime.now(timezone.utc).isoformat()
             exit_code = 128 - exit_code if exit_code < 0 else exit_code
             exit_code = 128 + interrupted if interrupted else exit_code
             if harness == 'claude':
@@ -183,9 +190,30 @@ def run(prompt=None, workspace=Path('/workspace'), default_task=Path('/opt/defau
                             'requested_model': model, 'actual_model': session.get('model'), 'effort': effort,
                             'auth_source': session.get('apiKeySource'),
                             'claude_code_version': session.get('claude_code_version'),
-                            'started_at': started_at, 'finished_at': datetime.now(timezone.utc).isoformat(),
-                            'elapsed_seconds': round(time.monotonic() - started, 3), 'exit_code': exit_code}
+                            'started_at': started_at, 'finished_at': finished_at,
+                            'elapsed_seconds': elapsed_ms / 1000, 'exit_code': exit_code}
                 (run_dir / 'usage.json').write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + '\n')
+            if benchmark_url:
+                characters = []
+                if not exit_code:
+                    try:
+                        listing = subprocess.check_output(['agent-wow', 'char', 'list', '--json'],
+                                                          cwd=workspace, env=env, stderr=subprocess.PIPE, timeout=30)
+                        characters = json.loads(listing)['characters']
+                    except (OSError, subprocess.SubprocessError, ValueError, KeyError):
+                        emit('Benchmark character verification failed.')
+                payload = dict(started_at=started_at, finished_at=finished_at, elapsed_ms=elapsed_ms,
+                               exit_code=exit_code, harness=harness, model=model, effort=effort,
+                               characters=characters, job_id=os.environ.get('AWS_BATCH_JOB_ID', ''))
+                saved = run_dir / 'benchmark-result.json'
+                saved.write_text(json.dumps(payload, indent=2) + '\n')
+                try:
+                    status = post(benchmark_url, benchmark_key, payload)
+                    emit(f'Benchmark result recorded: {status}.')
+                    exit_code = exit_code or (0 if status == 'succeeded' else 1)
+                except (OSError, ValueError, KeyError):
+                    emit(f'Benchmark upload failed. Saved result: {saved}; retry with benchmark_results.py send.')
+                    exit_code = exit_code or 74
             # Codex writes its own final report through --output-last-message.
             (run_dir / 'agent-exit-code.txt').write_text(str(exit_code) + '\n')
             emit(f'{label} finished with status {exit_code}. Report: {run_dir}/final-report.txt')

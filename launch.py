@@ -144,7 +144,7 @@ def follow(job_id, region, log_group, poll_seconds=5, final_wait_seconds=15):
         time.sleep(poll_seconds)
 
 
-def container_overrides(prompt, harness='codex'):
+def container_overrides(prompt, harness='codex', benchmark=None):
     spec = harness_spec(harness)
     model, effort = model_settings(harness)
     overrides = {'environment': [
@@ -152,6 +152,17 @@ def container_overrides(prompt, harness='codex'):
         {'name': spec['model_env'], 'value': model},
         {'name': spec['effort_env'], 'value': effort},
     ]}
+    if benchmark:
+        config = json.loads(Path(benchmark).read_text())
+        if (not isinstance(config, dict) or any(not isinstance(config.get(k), str) or not config[k].strip()
+                                               for k in ('url', 'key', 'prompt'))
+                or not config['url'].startswith('https://')):
+            raise ValueError('Invalid benchmark config: expected HTTPS url, key, and prompt.')
+        if prompt is not None and prompt != config['prompt']:
+            raise ValueError('The benchmark config fixes the prompt; omit the prompt argument.')
+        prompt = config['prompt']
+        overrides['environment'] += [{'name': 'BENCHMARK_' + name.upper(), 'value': config[name]}
+                                     for name in ('url', 'key')]
     if prompt is not None:
         if not prompt.strip():
             raise ValueError('Prompt must not be blank.')
@@ -213,13 +224,14 @@ def main():
     parser.add_argument('--queue', default='agent-wow', help='Batch queue; agent-wow-test has higher priority.')
     parser.add_argument('--region', default='us-west-2')
     parser.add_argument('--log-group', default='/aws/batch/agent-wow')
+    parser.add_argument('--benchmark', type=Path, help='Private run config created by benchmark_results.py.')
     args = parser.parse_args()
-    if args.watch is not None and (not args.watch.strip() or args.prompt is not None):
-        parser.error('--watch requires a nonempty job ID and does not accept a prompt.')
+    if args.watch is not None and (not args.watch.strip() or args.prompt is not None or args.benchmark):
+        parser.error('--watch requires a nonempty job ID and does not accept a prompt or benchmark.')
     job_id = args.watch
     try:
         if not job_id:
-            overrides = container_overrides(args.prompt, args.harness)
+            overrides = container_overrides(args.prompt, args.harness, args.benchmark)
             name = JOB_DEFINITIONS[args.harness]
             definition = rebuild(args.region, args.harness) if args.rebuild else os.environ.get('WOW_JOB_DEFINITION', name)
             submission = submit_job(args.region, name, definition, overrides, args.queue)
