@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
+import sys
 import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
@@ -60,10 +62,10 @@ class BenchmarkTests(unittest.TestCase):
                 os.environ, READ_KEY_HASH=hashlib.sha256(b'private-reader').hexdigest()):
             reply = results.handler(event, None)
         self.assertEqual(reply['statusCode'], 200)
-        self.assertEqual(json.loads(reply['body']), {'rows': [row, historical]})
+        self.assertEqual(json.loads(reply['body']), {'rows': [row, historical], 'live': []})
         self.assertEqual(self.db.scan.call_args.kwargs['ExclusiveStartKey'], {'run_id': 'cursor'})
         self.assertEqual(self.db.scan.call_args.kwargs['ProjectionExpression'],
-                         'run_id,race,#class,target_level,prompt,#result')
+                         'run_id,race,#class,target_level,prompt,#result,#stream')
 
     def test_success_requires_saved_matching_character_and_target_level(self):
         for changes in ({}, {'exit_code': 1}, {'characters': []},
@@ -98,6 +100,48 @@ class BenchmarkTests(unittest.TestCase):
             self.assertNotIn(self.key, overrides['command'])
             with self.assertRaises(ValueError):
                 container_overrides('Different task', benchmark=path)
+
+    def stream_payload(self):
+        return dict(kind='stream', channel='tuckerbullmorgan', job_id='12345678-1234-1234-1234-123456789012',
+                    instance_id='i-0123456789abcdef0', character='Gorvash', harness='codex', model='gpt-6.1-sol', effort='medium')
+
+    def test_stream_key_updates_only_its_run_without_fabricating_a_result(self):
+        self.assertEqual(self.call(**self.stream_payload())['statusCode'], 200)
+        update = self.db.update_item.call_args.kwargs
+        self.assertEqual(update['Key'], {'run_id': self.row['run_id']})
+        self.assertEqual(update['UpdateExpression'], 'SET #stream = :stream')
+        self.assertIn('#stream.job_id = :job', update['ConditionExpression'])
+        self.assertEqual(update['ExpressionAttributeValues'][':stream']['url'], 'https://www.twitch.tv/tuckerbullmorgan')
+
+    def test_stream_rejects_injection_wrong_key_and_finalized_runs(self):
+        self.assertEqual(self.call(key='b' * 43, **self.stream_payload())['statusCode'], 403)
+        for field, value in [('channel', 'example.com/x'), ('character', 'Gorvash{ENTER}'), ('instance_id', '../secret')]:
+            self.assertEqual(self.call(**{**self.stream_payload(), field: value})['statusCode'], 400)
+        self.row['result'] = {'status': 'succeeded'}
+        self.assertEqual(self.call(**self.stream_payload())['statusCode'], 409)
+        self.db.update_item.assert_not_called()
+
+    def test_live_link_requires_exact_running_job_fresh_real_output(self):
+        stream = self.stream_payload()
+        row = {**self.row, 'stream': stream}
+        batch, s3, boto = Mock(), Mock(), Mock()
+        boto.client.side_effect = lambda service, **_: batch if service == 'batch' else s3
+        status = dict(job_id=stream['job_id'], channel=stream['channel'], mode='live', state='active',
+                      updated_at='2026-10-26T22:00:00Z', output=dict(outputActive=True, outputBytes=100, outputReconnecting=False))
+        now = results.datetime.fromisoformat(status['updated_at'].replace('Z', '+00:00')).timestamp() + 10
+        batch.describe_jobs.return_value = {'jobs': [{'jobId': stream['job_id'], 'status': 'RUNNING'}]}
+        with patch.dict(sys.modules, {'boto3': boto, 'botocore.config': Mock()}), \
+                patch.dict(os.environ, RESULTS_BUCKET='bucket'), patch.object(results.time, 'time', return_value=now):
+            def check(value):
+                s3.get_object.return_value = {'Body': Mock(read=lambda: json.dumps(value))}
+                return results.active_streams([row])
+            self.assertEqual(check(status), [row])
+            for change in ({'job_id': 'different'}, {'mode': 'test'}, {'state': 'stopped'},
+                           {'updated_at': '2026-10-26T21:58:00Z'}, {'output': {'outputActive': False}},
+                           {'output': {**status['output'], 'outputReconnecting': True}}):
+                self.assertEqual(check({**status, **change}), [])
+            batch.describe_jobs.return_value['jobs'][0]['status'] = 'SUCCEEDED'
+            self.assertEqual(check(status), [])
 
 
 if __name__ == '__main__':

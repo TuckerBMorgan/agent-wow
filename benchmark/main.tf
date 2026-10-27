@@ -8,6 +8,7 @@ terraform {
 
 variable "aws_region" { default = "us-west-2" }
 variable "read_key_hash" { default = "" }
+variable "results_bucket" { default = "" }
 provider "aws" { region = var.aws_region }
 
 resource "aws_dynamodb_table" "runs" {
@@ -32,9 +33,12 @@ resource "aws_iam_role_policy" "results" {
   role = aws_iam_role.results.id
   policy = jsonencode({
     Version = "2012-10-17"
-    Statement = [{
+    Statement = concat([{
       Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:Scan"], Resource = aws_dynamodb_table.runs.arn
-    }]
+      }], var.results_bucket == "" ? [] : [
+      { Effect = "Allow", Action = ["batch:DescribeJobs"], Resource = "*" },
+      { Effect = "Allow", Action = ["s3:GetObject"], Resource = "arn:aws:s3:::${var.results_bucket}/viewer/*/stream-status.json" }
+    ])
   })
 }
 
@@ -56,8 +60,8 @@ resource "aws_lambda_function" "results" {
   handler          = "benchmark_results.handler"
   filename         = data.archive_file.results.output_path
   source_code_hash = data.archive_file.results.output_base64sha256
-  timeout          = 10
-  environment { variables = { TABLE = aws_dynamodb_table.runs.name, READ_KEY_HASH = var.read_key_hash } }
+  timeout          = 20
+  environment { variables = { TABLE = aws_dynamodb_table.runs.name, READ_KEY_HASH = var.read_key_hash, RESULTS_BUCKET = var.results_bucket } }
   depends_on = [aws_iam_role_policy.results, aws_iam_role_policy_attachment.logs]
 }
 

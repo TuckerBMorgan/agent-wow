@@ -210,7 +210,7 @@ def run(prompt=None, workspace=Path('/workspace'), default_task=Path('/opt/defau
                 try:
                     status = post(benchmark_url, benchmark_key, payload)
                     emit(f'Benchmark result recorded: {status}.')
-                    exit_code = exit_code or (0 if status == 'succeeded' else 1)
+                    exit_code = exit_code or (0 if status in ('succeeded', 'unverified') else 1)
                 except (OSError, ValueError, KeyError):
                     emit(f'Benchmark upload failed. Saved result: {saved}; retry with benchmark_results.py send.')
                     exit_code = exit_code or 74

@@ -1,6 +1,6 @@
 # Viewer code lives separately; infrastructure stays in this OpenTofu state.
 module "viewer" {
-  source = "git::https://github.com/TuckerBMorgan/agent-wow-viewer.git//terraform?ref=80c750e94e09ce5f24c3e26ea7f7f694ab64d4f0"
+  source = "git::https://github.com/TuckerBMorgan/agent-wow-viewer.git//terraform?ref=9ed637708f5f454ab65e5303e4a2d254c35e99d0"
 
   aws_region                    = var.aws_region
   partition                     = data.aws_partition.current.partition
@@ -21,6 +21,7 @@ module "viewer" {
 
 output "viewer_launch_template" { value = module.viewer.viewer_launch_template }
 output "viewer_subnet" { value = module.viewer.viewer_subnet }
+output "viewer_subnets" { value = [module.viewer.viewer_subnet, aws_subnet.agent.id] }
 output "world_build_template" { value = module.viewer.world_build_template }
 output "world_watch_image" { value = module.viewer.world_watch_image }
 output "viewer_job_queue" { value = module.viewer.viewer_job_queue }
