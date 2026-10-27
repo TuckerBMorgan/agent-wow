@@ -10,6 +10,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -28,7 +29,7 @@ args = sys.argv[1:]
 (root / 'request.json').write_text(json.dumps({
     'harness': harness, 'argv': args, 'stdin': sys.stdin.read(),
     'environment': {k: v for k, v in os.environ.items()
-                    if k.startswith(('ANTHROPIC_', 'CLAUDE_', 'CODEX_', 'OPENAI_'))},
+                    if k.startswith(('ANTHROPIC_', 'CLAUDE_', 'CODEX_', 'OPENAI_', 'BENCHMARK_'))},
 }))
 if os.environ.get('AGENT_TEST_SIGNAL'):
     def stop(number, frame):
@@ -164,6 +165,36 @@ class AgentRunnerTests(unittest.TestCase):
         for setting in ('AGENT_TEST_NO_RESULT', 'AGENT_TEST_ERROR'):
             with self.subTest(setting=setting):
                 self.assertEqual(self.run_agent(AGENT_WOW_HARNESS='claude', **{setting: '1'}), 1)
+
+    def test_benchmark_times_both_harnesses_without_exposing_key_to_agent(self):
+        game = self.root / 'agent-wow'
+        game.write_text('#!' + sys.executable + '\nprint(\'{"characters": [{"name": "Orc", '
+                        '"race": "Orc", "class": "Warrior", "level": 2}]}\')\n')
+        game.chmod(0o755)
+        for harness in ('codex', 'claude'):
+            with self.subTest(harness=harness), patch.object(runner, 'time', wraps=time) as clock, \
+                    patch.object(runner, 'post', return_value='succeeded') as report:
+                clock.monotonic.side_effect = [100, 102]
+                self.assertEqual(self.run_agent(AGENT_WOW_HARNESS=harness,
+                                 BENCHMARK_URL='https://example.test', BENCHMARK_KEY='private-run-key'), 0)
+                payload = report.call_args.args[2]
+                self.assertEqual(payload['elapsed_ms'], 2000)
+                self.assertEqual(payload['characters'][0]['level'], 2)
+                self.assertNotIn('BENCHMARK_KEY', self.request['environment'])
+                self.assertNotIn('private-run-key', (self.run_dir / 'benchmark-result.json').read_text())
+
+    def test_failed_upload_preserves_result_and_fails_job(self):
+        with patch.object(runner, 'post', side_effect=OSError('network failure')):
+            self.assertEqual(self.run_agent(BENCHMARK_URL='https://example.test',
+                                           BENCHMARK_KEY='private-run-key', AGENT_TEST_EXIT='7'), 7)
+            self.assertTrue((self.run_dir / 'benchmark-result.json').is_file())
+            self.assertEqual(self.run_agent(BENCHMARK_URL='https://example.test',
+                                           BENCHMARK_KEY='private-run-key'), 74)
+
+    def test_unverified_completion_cannot_make_job_succeed(self):
+        with patch.object(runner, 'post', return_value='failed'):
+            self.assertEqual(self.run_agent(BENCHMARK_URL='https://example.test',
+                                           BENCHMARK_KEY='private-run-key'), 1)
 
     def test_termination_is_forwarded_and_recorded_for_both_harnesses(self):
         script = (

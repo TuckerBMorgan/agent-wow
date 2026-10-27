@@ -116,7 +116,7 @@ COPY <<'TASK' /opt/default-task.txt
 Create an night elf druid and complete every available quest in the starting area
 TASK
 
-COPY agent_common.py /usr/local/bin/agent_common.py
+COPY agent_common.py benchmark_results.py /usr/local/bin/
 COPY --chmod=755 docker/run_agent.py /usr/local/bin/run-wow-agent
 
 # AWS Batch supplies the selected account credential through its execution role.

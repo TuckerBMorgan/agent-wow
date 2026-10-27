@@ -91,7 +91,7 @@ class JobHistoryTests(unittest.TestCase):
                             self.assertEqual(launch_all.main(), 0)
         rows = self.rows()
         self.assertEqual(len(rows), 2)
-        self.assertEqual({row['job_name'] for row in rows}, {'agent-wow-codex-subscription-orc-warrior', 'agent-wow-codex-subscription-orc-hunter'})
+        self.assertEqual({row['job_name'] for row in rows}, {'agent-wow-codex-subscription-starting-area-orc-warrior', 'agent-wow-codex-subscription-starting-area-orc-hunter'})
         self.assertTrue(all(row['prompt'].startswith('Create one orc ') for row in rows))
 
     def test_claude_matrix_routes_and_records_native_claude_settings(self):
@@ -109,7 +109,7 @@ class JobHistoryTests(unittest.TestCase):
             self.assertEqual(args[args.index('--job-definition') + 1], 'agent-wow-claude-subscription')
         rows = self.rows()
         self.assertEqual({row['job_name'] for row in rows}, {
-            'agent-wow-claude-subscription-orc-warrior', 'agent-wow-claude-subscription-orc-hunter',
+            'agent-wow-claude-subscription-starting-area-orc-warrior', 'agent-wow-claude-subscription-starting-area-orc-hunter',
         })
         self.assertTrue(all(row['provider'] == 'claude-subscription' for row in rows))
         self.assertTrue(all(row['model'] == 'claude-opus-5-5' for row in rows))
