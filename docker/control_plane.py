@@ -3,6 +3,7 @@
 import json
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import boto3
 from botocore.exceptions import ClientError
@@ -34,6 +35,24 @@ def load_credential(params):
     if not credential:
         raise ValueError("credential secret must be a nonempty string")
     return credential
+
+def upload_viewer_connection(params, path, batch_job_id):
+    connection = json.loads(Path(path).read_text())
+    connection.update(
+        schema_version=1,
+        job_id=params["job_id"],
+        batch_job_id=batch_job_id,
+    )
+    bucket, _ = _s3_parts(params["output_s3_uri"])
+    key = f'viewer/{params["job_id"]}/connection.json'
+    boto3.client("s3").put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=(json.dumps(connection, indent=2) + "\n").encode(),
+        ContentType="application/json",
+        ServerSideEncryption="AES256",
+    )
+    return f"s3://{bucket}/{key}"
 
 def mark_running(params, started_at, viewer_uri):
     table = _table(params)

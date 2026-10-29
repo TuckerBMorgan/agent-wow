@@ -121,13 +121,14 @@ def start_server():
 
 
 def prepare_accounts(params):
-    checked(["prepare_wow_account.py"])
-    viewer_uri = subprocess.check_output(
-        ["prepare_viewer_account.py", "--params", str(PARAMS)],
+    checked(["prepare_wow_account.py", "--player"])
+    viewer_path = subprocess.check_output(
+        ["prepare_wow_account.py", "--viewer"],
         text=True, env=trusted_env(),
     ).strip()
-    if not viewer_uri.startswith("s3://"):
-        raise ValueError("viewer helper did not return an S3 URI")
+    viewer_uri = control_plane.upload_viewer_connection(
+        params, viewer_path, os.environ["AWS_BATCH_JOB_ID"]
+    )
     started_at = now()
     control_plane.mark_running(params, started_at, viewer_uri)
     return started_at
