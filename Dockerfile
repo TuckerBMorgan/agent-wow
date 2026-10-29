@@ -132,6 +132,7 @@ RUN for image in \
 COPY docker/compose.yaml /opt/server/compose.yaml
 COPY --chmod=755 docker/prepare_wow_account.py /usr/local/bin/
 COPY --chmod=755 docker/prepare_viewer_account.py /usr/local/bin/
+COPY --chmod=644 docker/control_plane.py /usr/local/bin/control_plane.py
 COPY --chmod=755 docker/runner.py /usr/local/bin/runner.py
 
 # Keep the toolchain on login-shell paths used by the agents.

@@ -39,24 +39,16 @@ def trusted_env():
         environment.pop(name, None)
     return environment
 
-
+# what is this function for
 def checked(command, **kwargs):
     kwargs.setdefault("env", trusted_env())
     return subprocess.run(command, check=True, **kwargs)
 
 
 def load_job():
+    # grab the params for this job
     params = control_plane.load_params(os.environ["PARAMS_S3_URI"])
-    required = {
-        "job_id", "benchmark", "trial_id", "race", "class",
-        "prompt", "harness", "model", "effort", "timeout_seconds",
-        "credential_secret_arn", "output_s3_uri",
-    }
-    if required - params.keys():
-        raise ValueError("params.json is missing required fields")
-    if params["harness"] not in {"codex", "claude"}:
-        raise ValueError("unsupported harness")
-
+    # make the folder we need for all of this, and then write the files into it
     PRIVATE.mkdir(parents=True, mode=0o700, exist_ok=True)
     PRIVATE.chmod(0o700)
     PARAMS.write_text(json.dumps(params, indent=2) + "\n")
@@ -65,23 +57,30 @@ def load_job():
 
 
 def prepare_workspace():
+    # make all of the folders we need, maybe we could move this to the dockerfile itself?
     for name in ("config", "data", "modules", "journal", "logs", "server", "tmp"):
         (WORKSPACE / name).mkdir(parents=True, exist_ok=True)
+
+    # why are we doing this copy?
     for source, destination in (
         ("/opt/agent-wow", "agent-wow"),
         ("/opt/go-module-template", "go-module-template"),
     ):
         shutil.copytree(source, WORKSPACE / destination, dirs_exist_ok=True)
+    # there is a lot of copying, why are we doing it this way?
     shutil.copy2("/opt/workspace-template/AGENTS.md", WORKSPACE / "AGENTS.md")
     (WORKSPACE / "CLAUDE.md").symlink_to("AGENTS.md")
     (WORKSPACE / "azerothcore-reference").symlink_to("/opt/azerothcore-reference")
     shutil.copy2("/opt/server/compose.yaml", WORKSPACE / "server/compose.yaml")
+
     env_file = WORKSPACE / "server/.env"
     env_file.write_text(f"MYSQL_ROOT_PASSWORD={secrets.token_hex(24)}\n")
     env_file.chmod(0o600)
 
 
 def start_server():
+
+    # create our log files
     docker_log = (LOGS / "dockerd.log").open("w")
     STATE["docker_log"] = docker_log
     STATE["dockerd"] = subprocess.Popen(
@@ -93,6 +92,7 @@ def start_server():
         stdout=docker_log, stderr=subprocess.STDOUT, env=trusted_env(),
     )
 
+    # start up the internal dockerimage
     deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
         if subprocess.run(
@@ -107,11 +107,14 @@ def start_server():
     else:
         raise RuntimeError("Docker did not start")
 
+    # is this still right?
     archives = sorted(Path("/opt/server-images").glob("*.tar"))
     if len(archives) != 5:
         raise RuntimeError("expected five cached server images")
+
     for archive in archives:
         checked(["docker", "load", "--input", str(archive)])
+
     checked(COMPOSE + [
         "up", "--wait", "--wait-timeout", "1800", "--pull", "never",
     ])
@@ -229,7 +232,6 @@ def run_agent(params, credential):
         finally:
             STATE["agent"] = None
 
-
 def cleanup():
     agent = STATE["agent"]
     dockerd = STATE["dockerd"]
@@ -259,8 +261,11 @@ def stop(signum, _frame):
 
 
 def main():
+    # why are we doing this?
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+
+    # null out
     params = credential = None
     phase = "load_job"
     started = time.monotonic()
@@ -270,6 +275,7 @@ def main():
         "agent_timed_out": False,
         "runner_error": None,
     }
+
     try:
         params, credential = load_job()
         phase = "prepare_workspace"
@@ -308,15 +314,7 @@ def main():
         json.dumps(report, indent=2) + "\n"
     )
     try:
-        control_plane.record_execution(
-            params, report,
-            artifacts={
-                "output": OUTPUT,
-                "logs": LOGS,
-                "journal": WORKSPACE / "journal",
-            },
-            redactions=[credential] if credential else [],
-        )
+        control_plane.record_execution(params, report)
     except Exception as error:
         print(f"Execution recording failed: {type(error).__name__}", flush=True)
         return 1
@@ -325,4 +323,3 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
