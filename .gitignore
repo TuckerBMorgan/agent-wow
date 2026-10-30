@@ -3,3 +3,7 @@
 /data/
 /tmp/
 /job_generator/claim.zip
+/job_generator/.terraform.*
+/job_generator/.terraform/
+/job_generator/terraform.tfstate*
+/job_generator/__pycache__/

@@ -1,27 +1,107 @@
 {
   "benchmark": "agent-wow-v3",
   "evaluations": [
-    {"id": "starting-zone-v1", "prompt_template": "create a [race/class] and complete the starting zone"},
-    {"id": "level-10-v1", "prompt_template": "create a [race/class] and adventure until they are level 10"}
+    {
+      "id": "starting-zone-v1",
+      "prompt_template": "create a [race/class] and complete the starting zone"
+    },
+    {
+      "id": "level-10-v1",
+      "prompt_template": "create a [race/class] and adventure until they are level 10"
+    }
   ],
-  "claim_url": "https://benchmark.example/claim",
-  "runner_image_digest": "sha256:<digest>",
+  "claim_url": "https://10c315yz1k.execute-api.us-west-2.amazonaws.com/claim",
+  "runner_image_digest": "sha256:45d924091ee35ca73854b3f6f259f4b5da72e97f32f4c8e626bc882aa0b0081a",
   "timeout_seconds": 21600,
-  "trial_ids": ["1", "2", "3"],
+  "trial_ids": [
+    "1",
+    "2",
+    "3"
+  ],
   "characters": {
-    "human": ["warrior", "paladin", "rogue", "priest", "mage", "warlock"],
-    "orc": ["warrior", "hunter", "rogue", "shaman", "warlock"],
-    "dwarf": ["warrior", "paladin", "hunter", "rogue", "priest"],
-    "night-elf": ["warrior", "hunter", "rogue", "priest", "druid"],
-    "undead": ["warrior", "rogue", "priest", "mage", "warlock"],
-    "tauren": ["warrior", "hunter", "shaman", "druid"],
-    "gnome": ["warrior", "rogue", "mage", "warlock"],
-    "troll": ["warrior", "hunter", "rogue", "priest", "shaman", "mage"],
-    "blood-elf": ["paladin", "hunter", "rogue", "priest", "mage", "warlock"],
-    "draenei": ["warrior", "paladin", "hunter", "priest", "shaman", "mage"]
+    "human": [
+      "warrior",
+      "paladin",
+      "rogue",
+      "priest",
+      "mage",
+      "warlock"
+    ],
+    "orc": [
+      "warrior",
+      "hunter",
+      "rogue",
+      "shaman",
+      "warlock"
+    ],
+    "dwarf": [
+      "warrior",
+      "paladin",
+      "hunter",
+      "rogue",
+      "priest"
+    ],
+    "night-elf": [
+      "warrior",
+      "hunter",
+      "rogue",
+      "priest",
+      "druid"
+    ],
+    "undead": [
+      "warrior",
+      "rogue",
+      "priest",
+      "mage",
+      "warlock"
+    ],
+    "tauren": [
+      "warrior",
+      "hunter",
+      "shaman",
+      "druid"
+    ],
+    "gnome": [
+      "warrior",
+      "rogue",
+      "mage",
+      "warlock"
+    ],
+    "troll": [
+      "warrior",
+      "hunter",
+      "rogue",
+      "priest",
+      "shaman",
+      "mage"
+    ],
+    "blood-elf": [
+      "paladin",
+      "hunter",
+      "rogue",
+      "priest",
+      "mage",
+      "warlock"
+    ],
+    "draenei": [
+      "warrior",
+      "paladin",
+      "hunter",
+      "priest",
+      "shaman",
+      "mage"
+    ]
   },
   "runs": [
-    {"harness": "codex", "model": "gpt-6.1-sol", "effort": "medium"},
-    {"harness": "claude", "model": "claude-opus-5-5", "effort": "medium"}
+    {
+      "harness": "codex",
+      "model": "gpt-6.1-sol",
+      "effort": "medium"
+    },
+    {
+      "harness": "claude",
+      "model": "claude-opus-5-5",
+      "effort": "medium"
+    }
   ]
 }

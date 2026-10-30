@@ -4,7 +4,9 @@ FROM golang:${GO_VERSION}-bookworm AS agent-wow-builder
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG AGENT_WOW_REPOSITORY=https://github.com/TuckerBMorgan/agent-wow.git
 ARG AGENT_WOW_REF=main
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates git \
+# Avoid mismatched downloads through HTTP proxies that mishandle pipelining.
+RUN apt-get -o Acquire::http::Pipeline-Depth=0 update \
+    && apt-get -o Acquire::http::Pipeline-Depth=0 install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 RUN git init . && git remote add origin "${AGENT_WOW_REPOSITORY}" \
@@ -24,13 +26,15 @@ ENV PATH="/usr/local/go/bin:/opt/venv/bin:/root/go/bin:/home/node/go/bin:${PATH}
     DOCKER_HOST=unix:///var/run/docker.sock AGENT_WOW_CONFIG_DIR=/workspace/config \
     AGENT_WOW_DATA_DIR=/workspace/data AGENT_WOW_MODULE_DIR=/workspace/modules \
     PYTHONUNBUFFERED=1
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::http::Pipeline-Depth=0 update \
+    && apt-get -o Acquire::http::Pipeline-Depth=0 install -y --no-install-recommends \
       bash ca-certificates curl git jq ripgrep build-essential protobuf-compiler \
       python3 python3-venv procps iproute2 iptables tini util-linux bubblewrap skopeo \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
-    && apt-get update && apt-get install -y --no-install-recommends \
+    && apt-get -o Acquire::http::Pipeline-Depth=0 update \
+    && apt-get -o Acquire::http::Pipeline-Depth=0 install -y --no-install-recommends \
       docker-ce docker-ce-cli containerd.io docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
 RUN npm install --global "@openai/codex@${CODEX_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_VERSION}" \

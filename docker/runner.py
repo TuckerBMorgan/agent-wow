@@ -78,13 +78,24 @@ def mark_running(params, started_at, viewer_uri):
 def record_execution(params, report):
     if report["job_id"] != params["job_id"]:
         raise ValueError("execution report job_id does not match params.json")
+    report["status"] = ("SUCCEEDED" if report["agent_exit_code"] == 0
+                        and not report["agent_timed_out"] and report["runner_error"] is None else "FAILED")
     uri = put_s3_json(f'runs/{params["job_id"]}/execution.json', report, True)
     recorded_at = now()
     TABLE.update_item(Key={"pk": f'JOB#{params["job_id"]}'},
-        UpdateExpression="SET execution_s3_uri=:uri, execution_recorded_at=:at, agent_exit_code=:code, agent_timed_out=:timed_out, runner_error=:error, updated_at=:at",
-        ConditionExpression="#status=:running", ExpressionAttributeNames={"#status": "status"},
-        ExpressionAttributeValues={":running": "RUNNING", ":uri": uri, ":at": recorded_at,
+        UpdateExpression="SET #status=:finished, finished_at=:finished_at, execution_s3_uri=:uri, execution_recorded_at=:at, agent_exit_code=:code, agent_timed_out=:timed_out, runner_error=:error, log_artifacts=:logs, updated_at=:at",
+        ConditionExpression="#status=:scheduled OR #status=:running", ExpressionAttributeNames={"#status": "status"},
+        ExpressionAttributeValues={":scheduled": "SCHEDULED", ":running": "RUNNING",
+            ":finished": report["status"], ":finished_at": report["finished_at"],
+            ":uri": uri, ":at": recorded_at, ":logs": report["log_artifacts"],
             ":code": report["agent_exit_code"], ":timed_out": report["agent_timed_out"], ":error": report["runner_error"]})
+
+def upload_logs(params, report):
+    for name in ("agent.log", "final-report.txt"):
+        path = LOGS / name
+        if path.is_file():
+            report["log_artifacts"][name] = put_s3_file(
+                f'runs/{params["job_id"]}/logs/{name}', path, ContentType="text/plain; charset=utf-8")
 
 def world_console(command, expect=None):
     containers = docker.from_env().containers.list(filters={"label": ["com.docker.compose.project=agent-wow-world",
@@ -181,13 +192,13 @@ def agent_env():
 
 def sandbox(command):
     return ["runuser", "-u", "node", "--", "bwrap", "--die-with-parent", "--new-session", "--unshare-pid",
-            "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/run", "--tmpfs", "/root",
+            "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
+            "--tmpfs", "/run", "--tmpfs", "/root",
             "--tmpfs", "/var/lib/docker", "--bind", str(WORKSPACE), str(WORKSPACE), "--tmpfs", f"{WORKSPACE}/server",
             "--bind", "/home/node", "/home/node", "--chdir", str(WORKSPACE), "--", *command]
 
 def harness(params, credential):
     env = agent_env()
-    checked(["chown", "-R", "node:node", str(WORKSPACE), "/home/node"])
     if params["harness"] == "claude":
         env |= {"CLAUDE_CODE_OAUTH_TOKEN": credential, "DISABLE_AUTOUPDATER": "1"}
         command = ["claude", "-p", "--model", params["model"], "--effort", params["effort"],
@@ -203,10 +214,12 @@ def harness(params, credential):
         (home / "config.toml").write_text('cli_auth_credentials_store = "file"\nforced_login_method = "chatgpt"\n')
         env["CODEX_HOME"] = str(home)
         command = ["codex", "--config", 'cli_auth_credentials_store="file"', "--config",
-            'forced_login_method="chatgpt"', "--model", params["model"], "--config",
+            'forced_login_method="chatgpt"', "--config", 'sandbox_workspace_write.network_access=true',
+            "--model", params["model"], "--config",
             f'model_reasoning_effort="{params["effort"]}"', "--ask-for-approval", "never", "exec",
             "--sandbox", "workspace-write", "--cd", str(WORKSPACE), "--skip-git-repo-check",
             "--color", "never", "--output-last-message", str(LOGS / "final-report.txt"), "-"]
+    checked(["chown", "-R", "node:node", str(WORKSPACE), "/home/node"])
     return sandbox(command), env
 
 def run_agent(params, credential):
@@ -282,10 +295,10 @@ def stop(signum, _frame):
 def main():
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
-    params = credential = None
+    params, credential = {"job_id": os.environ["JOB_ID"]}, None
     phase, started, started_at = "load_job", time.monotonic(), now()
     report = {"agent_exit_code": None, "agent_timed_out": False, "runner_error": None,
-              "state_artifact": None}
+              "state_artifact": None, "log_artifacts": {}}
     try:
         params, credential = load_job()
         phase = "prepare_workspace"; prepare_workspace()
@@ -301,9 +314,16 @@ def main():
         report["runner_error"] = f"{phase}_failed"
         print(f"Runner failed during {phase}: {type(error).__name__}", flush=True)
     finally:
-        cleanup()
-    if not params:
-        return 1
+        try:
+            cleanup()
+        except (Exception, KeyboardInterrupt) as error:
+            report["runner_error"] = report["runner_error"] or "cleanup_failed"
+            print(f"Runner cleanup failed: {type(error).__name__}", flush=True)
+    try:
+        upload_logs(params, report)
+    except Exception as error:
+        report["runner_error"] = report["runner_error"] or "log_upload_failed"
+        print(f"Log upload failed: {type(error).__name__}", flush=True)
     report |= {"job_id": params["job_id"], "started_at": started_at, "finished_at": now(),
                "elapsed_ms": round((time.monotonic() - started) * 1000)}
     try:
@@ -311,6 +331,6 @@ def main():
     except Exception as error:
         print(f"Execution recording failed: {type(error).__name__}", flush=True)
         return 1
-    return 0
+    return 0 if report["status"] == "SUCCEEDED" else 1
 if __name__ == "__main__":
     raise SystemExit(main())
