@@ -1,7 +1,4 @@
 **
 !Dockerfile
 !docker/
-!docker/compose.yaml
-!docker/control_plane.py
-!docker/prepare_wow_account.py
-!docker/runner.py
+!docker/**

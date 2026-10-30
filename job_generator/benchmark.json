@@ -1,87 +1,27 @@
 {
   "benchmark": "agent-wow-v3",
   "evaluations": [
-    {
-      "id": "starting-zone-v1",
-      "prompt_template": "create a [race/class] and complete the starting zone"
-    },
-    {
-      "id": "level-10-v1",
-      "prompt_template": "create a [race/class] and adventure until they are level 10"
-    }
+    {"id": "starting-zone-v1", "prompt_template": "create a [race/class] and complete the starting zone"},
+    {"id": "level-10-v1", "prompt_template": "create a [race/class] and adventure until they are level 10"}
   ],
   "claim_url": "https://benchmark.example/claim",
   "runner_image_digest": "sha256:<digest>",
   "timeout_seconds": 21600,
-  "trial_ids": [
-    "1",
-    "2",
-    "3"
-  ],
-  "race_class_pairs": [
-    {"race": "human", "class": "warrior"},
-    {"race": "human", "class": "paladin"},
-    {"race": "human", "class": "rogue"},
-    {"race": "human", "class": "priest"},
-    {"race": "human", "class": "mage"},
-    {"race": "human", "class": "warlock"},
-    {"race": "orc", "class": "warrior"},
-    {"race": "orc", "class": "hunter"},
-    {"race": "orc", "class": "rogue"},
-    {"race": "orc", "class": "shaman"},
-    {"race": "orc", "class": "warlock"},
-    {"race": "dwarf", "class": "warrior"},
-    {"race": "dwarf", "class": "paladin"},
-    {"race": "dwarf", "class": "hunter"},
-    {"race": "dwarf", "class": "rogue"},
-    {"race": "dwarf", "class": "priest"},
-    {"race": "night-elf", "class": "warrior"},
-    {"race": "night-elf", "class": "hunter"},
-    {"race": "night-elf", "class": "rogue"},
-    {"race": "night-elf", "class": "priest"},
-    {"race": "night-elf", "class": "druid"},
-    {"race": "undead", "class": "warrior"},
-    {"race": "undead", "class": "rogue"},
-    {"race": "undead", "class": "priest"},
-    {"race": "undead", "class": "mage"},
-    {"race": "undead", "class": "warlock"},
-    {"race": "tauren", "class": "warrior"},
-    {"race": "tauren", "class": "hunter"},
-    {"race": "tauren", "class": "shaman"},
-    {"race": "tauren", "class": "druid"},
-    {"race": "gnome", "class": "warrior"},
-    {"race": "gnome", "class": "rogue"},
-    {"race": "gnome", "class": "mage"},
-    {"race": "gnome", "class": "warlock"},
-    {"race": "troll", "class": "warrior"},
-    {"race": "troll", "class": "hunter"},
-    {"race": "troll", "class": "rogue"},
-    {"race": "troll", "class": "priest"},
-    {"race": "troll", "class": "shaman"},
-    {"race": "troll", "class": "mage"},
-    {"race": "blood-elf", "class": "paladin"},
-    {"race": "blood-elf", "class": "hunter"},
-    {"race": "blood-elf", "class": "rogue"},
-    {"race": "blood-elf", "class": "priest"},
-    {"race": "blood-elf", "class": "mage"},
-    {"race": "blood-elf", "class": "warlock"},
-    {"race": "draenei", "class": "warrior"},
-    {"race": "draenei", "class": "paladin"},
-    {"race": "draenei", "class": "hunter"},
-    {"race": "draenei", "class": "priest"},
-    {"race": "draenei", "class": "shaman"},
-    {"race": "draenei", "class": "mage"}
-  ],
+  "trial_ids": ["1", "2", "3"],
+  "characters": {
+    "human": ["warrior", "paladin", "rogue", "priest", "mage", "warlock"],
+    "orc": ["warrior", "hunter", "rogue", "shaman", "warlock"],
+    "dwarf": ["warrior", "paladin", "hunter", "rogue", "priest"],
+    "night-elf": ["warrior", "hunter", "rogue", "priest", "druid"],
+    "undead": ["warrior", "rogue", "priest", "mage", "warlock"],
+    "tauren": ["warrior", "hunter", "shaman", "druid"],
+    "gnome": ["warrior", "rogue", "mage", "warlock"],
+    "troll": ["warrior", "hunter", "rogue", "priest", "shaman", "mage"],
+    "blood-elf": ["paladin", "hunter", "rogue", "priest", "mage", "warlock"],
+    "draenei": ["warrior", "paladin", "hunter", "priest", "shaman", "mage"]
+  },
   "runs": [
-    {
-      "harness": "codex",
-      "model": "gpt-6.1-sol",
-      "effort": "medium"
-    },
-    {
-      "harness": "claude",
-      "model": "claude-opus-5-5",
-      "effort": "medium"
-    }
+    {"harness": "codex", "model": "gpt-6.1-sol", "effort": "medium"},
+    {"harness": "claude", "model": "claude-opus-5-5", "effort": "medium"}
   ]
 }
