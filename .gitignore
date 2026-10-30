@@ -7,3 +7,4 @@
 /job_generator/.terraform/
 /job_generator/terraform.tfstate*
 /job_generator/__pycache__/
+/job_generator/uv.lock

@@ -1,4 +1,0 @@
-#!/bin/sh
-set -eu
-cat > /workspace/logs/prompt.txt
-printf '%s\n' '{"type":"result","result":"local runner smoke test"}'
