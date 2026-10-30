@@ -1,6 +1,5 @@
 """Small filesystem-backed boto3 substitute for the runner smoke test."""
 
-import io
 import json
 import os
 from pathlib import Path
@@ -12,12 +11,11 @@ ROOT = Path(os.environ["LOCAL_AWS_ROOT"])
 
 
 class S3:
-    def get_object(self, Bucket, Key):
-        return {"Body": io.BytesIO((ROOT / "s3" / Bucket / Key).read_bytes())}
-
     def put_object(self, Bucket, Key, Body, **_kwargs):
         path = ROOT / "s3" / Bucket / Key
         path.parent.mkdir(parents=True, exist_ok=True)
+        if hasattr(Body, "read"):
+            Body = Body.read()
         path.write_bytes(Body.encode() if isinstance(Body, str) else Body)
 
 
@@ -25,10 +23,19 @@ class SecretsManager:
     def get_secret_value(self, SecretId):
         return {"SecretString": (ROOT / "secrets" / SecretId).read_text()}
 
+    def delete_secret(self, SecretId, ForceDeleteWithoutRecovery):
+        assert ForceDeleteWithoutRecovery is True
+        (ROOT / "secrets" / SecretId).unlink()
+        return {}
+
 
 class Table:
     def __init__(self, name):
         self.root = ROOT / "dynamodb" / name
+
+    def get_item(self, Key, ConsistentRead):
+        assert ConsistentRead is True
+        return {"Item": json.loads((self.root / f'{Key["pk"]}.json').read_text())}
 
     def update_item(
         self,

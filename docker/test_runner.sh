@@ -45,33 +45,30 @@ docker info >/dev/null
 docker buildx version >/dev/null
 
 mkdir -p \
-    "$test_root/state/s3/params" \
     "$test_root/state/s3/output" \
     "$test_root/state/secrets" \
     "$test_root/state/dynamodb/agent-wow-jobs" \
     "$test_root/workspace"
 
-cat > "$test_root/state/s3/params/params.json" <<'JSON'
+cat > "$test_root/state/dynamodb/agent-wow-jobs/JOB#local-test.json" <<'JSON'
 {
-  "job_id": "local-test",
-  "benchmark": "agent-wow-v3",
-  "trial_id": "local",
-  "race": "human",
-  "class": "warrior",
-  "prompt": "Complete the local runner smoke test.",
-  "harness": "claude",
-  "model": "local-stub",
-  "effort": "low",
-  "timeout_seconds": 60,
-  "credential_secret_arn": "local-credential",
-  "output_s3_uri": "s3://output/local-test",
-  "jobs_table": "agent-wow-jobs"
+  "pk": "JOB#local-test",
+  "status": "SCHEDULED",
+  "case_id": "local-case",
+  "spec": {
+    "benchmark": "agent-wow-v3",
+    "trial_id": "local",
+    "race": "human",
+    "class": "warrior",
+    "prompt": "Complete the local runner smoke test.",
+    "harness": "claude",
+    "model": "local-stub",
+    "effort": "low",
+    "timeout_seconds": 60
+  }
 }
 JSON
 printf '%s' 'local-claude-token' > "$test_root/state/secrets/local-credential"
-cat > "$test_root/state/dynamodb/agent-wow-jobs/JOB#local-test.json" <<'JSON'
-{"pk":"JOB#local-test","status":"SCHEDULED"}
-JSON
 
 agent_wow_ref=${AGENT_WOW_REF:-$(git rev-parse HEAD)}
 docker buildx create --name "$builder" --driver docker-container >/dev/null
@@ -94,27 +91,48 @@ docker run --rm \
     --env AWS_DEFAULT_REGION=us-east-1 \
     --env AWS_EC2_METADATA_DISABLED=true \
     --env AWS_BATCH_JOB_ID=local-batch-job \
+    --env ARTIFACTS_BUCKET=output \
+    --env CREDENTIAL_SECRET_ARN=local-credential \
+    --env JOBS_TABLE=agent-wow-jobs \
+    --env JOB_ID=local-test \
     --env LOCAL_AWS_ROOT=/run/local-aws \
-    --env PARAMS_S3_URI=s3://params/params.json \
     --mount "type=bind,src=$test_root/state,dst=/run/local-aws" \
     --mount "type=bind,src=$test_root/workspace,dst=/workspace" \
     --mount "type=bind,src=$repo_root/docker/test_support/boto3.py,dst=/usr/local/bin/boto3.py,readonly" \
     --mount "type=bind,src=$repo_root/docker/test_support/claude,dst=/usr/local/bin/claude,readonly" \
     "$image"
 
-test -s "$test_root/state/s3/output/local-test/execution.json"
+test -s "$test_root/state/s3/output/runs/local-test/execution.json"
+test -s "$test_root/state/s3/output/runs/local-test/acore_characters.sql.gz"
 test -s "$test_root/state/s3/output/viewer/local-test/connection.json"
 test -s "$test_root/workspace/logs/agent.log"
-python3 - "$test_root/state/dynamodb/agent-wow-jobs/JOB#local-test.json" <<'PY'
+test ! -e "$test_root/state/secrets/local-credential"
+python3 - \
+    "$test_root/state/dynamodb/agent-wow-jobs/JOB#local-test.json" \
+    "$test_root/state/s3/output/runs/local-test/execution.json" \
+    "$test_root/state/s3/output/runs/local-test/acore_characters.sql.gz" <<'PY'
+import gzip
+import hashlib
 import json
 import sys
 
 job = json.load(open(sys.argv[1]))
+execution = json.load(open(sys.argv[2]))
+archive = open(sys.argv[3], "rb").read()
 assert job["status"] == "RUNNING"
 assert job["agent_exit_code"] == 0
 assert job["agent_timed_out"] is False
 assert job["runner_error"] is None
-assert job["execution_s3_uri"] == "s3://output/local-test/execution.json"
+assert job["execution_s3_uri"] == "s3://output/runs/local-test/execution.json"
+assert execution["state_artifact"] == {
+    "database": "acore_characters",
+    "format": "mysql-dump-gzip",
+    "sha256": hashlib.sha256(archive).hexdigest(),
+    "size_bytes": len(archive),
+    "uri": "s3://output/runs/local-test/acore_characters.sql.gz",
+}
+dump = gzip.decompress(archive)
+assert b"Current Database: `acore_characters`" in dump
 PY
 
 echo "Runner smoke test passed."

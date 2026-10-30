@@ -2,12 +2,17 @@ locals {
   ecs_task_assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect = "Allow"
+      Effect    = "Allow"
       Principal = { Service = "ecs-tasks.amazonaws.com" }
       Action    = "sts:AssumeRole"
     }]
   })
+  job_secret_arn = "arn:${data.aws_partition.current.partition}:secretsmanager:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:secret:agent-wow/jobs/*"
 }
+
+data "aws_caller_identity" "current" {}
+data "aws_partition" "current" {}
+data "aws_region" "current" {}
 
 resource "aws_iam_role" "runner_job" {
   name               = "agent-wow-runner-job"
@@ -22,11 +27,6 @@ resource "aws_iam_role_policy" "runner_job" {
     Version = "2012-10-17"
     Statement = [
       {
-        Effect   = "Allow"
-        Action   = "s3:GetObject"
-        Resource = "${aws_s3_bucket.artifacts.arn}/params/*"
-      },
-      {
         Effect = "Allow"
         Action = "s3:PutObject"
         Resource = [
@@ -36,16 +36,16 @@ resource "aws_iam_role_policy" "runner_job" {
       },
       {
         Effect   = "Allow"
-        Action   = "dynamodb:UpdateItem"
+        Action   = ["dynamodb:GetItem", "dynamodb:UpdateItem"]
         Resource = aws_dynamodb_table.jobs.arn
       },
       {
         Effect = "Allow"
-        Action = "secretsmanager:GetSecretValue"
-        Resource = [
-          for secret in aws_secretsmanager_secret.runner_credentials :
-          secret.arn
+        Action = [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DeleteSecret"
         ]
+        Resource = local.job_secret_arn
       }
     ]
   })
@@ -67,7 +67,7 @@ resource "aws_iam_role" "batch_instance" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect = "Allow"
+      Effect    = "Allow"
       Principal = { Service = "ec2.amazonaws.com" }
       Action    = "sts:AssumeRole"
     }]

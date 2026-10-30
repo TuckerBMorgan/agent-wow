@@ -46,6 +46,7 @@ resource "aws_batch_compute_environment" "runner" {
 resource "aws_batch_job_queue" "runner" {
   name     = "agent-wow-runner"
   priority = 1
+  state    = "ENABLED"
 
   compute_environment_order {
     order               = 1
@@ -62,6 +63,10 @@ resource "aws_batch_job_definition" "runner" {
     privileged       = true
     jobRoleArn       = aws_iam_role.runner_job.arn
     executionRoleArn = aws_iam_role.runner_execution.arn
+    environment = [
+      { name = "ARTIFACTS_BUCKET", value = aws_s3_bucket.artifacts.id },
+      { name = "JOBS_TABLE", value = aws_dynamodb_table.jobs.name }
+    ]
     resourceRequirements = [
       { type = "VCPU", value = "8" },
       { type = "MEMORY", value = "28672" }

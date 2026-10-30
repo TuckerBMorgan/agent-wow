@@ -1,4 +1,6 @@
 #!/opt/venv/bin/python3
+import gzip
+import hashlib
 import json
 import os
 import secrets
@@ -13,11 +15,12 @@ import docker
 from botocore.exceptions import ClientError
 
 WORKSPACE = Path("/workspace")
-PRIVATE = Path("/run/agent-wow-private")
-OUTPUT = PRIVATE / "output"
 LOGS = WORKSPACE / "logs"
 COMPOSE = ["docker", "compose", "--project-directory", f"{WORKSPACE}/server", "--file", f"{WORKSPACE}/server/compose.yaml"]
 STATE = {"agent": None, "dockerd": None, "docker_log": None}
+TABLE = boto3.resource("dynamodb").Table(os.environ["JOBS_TABLE"])
+S3 = boto3.client("s3")
+BUCKET = os.environ["ARTIFACTS_BUCKET"]
 
 def now():
     return datetime.now(timezone.utc).isoformat()
@@ -35,38 +38,34 @@ def trusted_env():
 def checked(command, **kwargs):
     kwargs.setdefault("env", trusted_env()); return subprocess.run(command, check=True, **kwargs)
 
-def s3_parts(uri):
-    parts = uri.removeprefix("s3://").split("/", 1)
-    if not uri.startswith("s3://") or len(parts) != 2 or not all(parts): raise ValueError("expected an S3 URI with a bucket and key")
-    return parts
+def put_s3_json(key, value, sort_keys=False):
+    S3.put_object(Bucket=BUCKET, Key=key, Body=(json.dumps(value, indent=2, sort_keys=sort_keys) + "\n").encode(),
+                  ContentType="application/json", ServerSideEncryption="AES256")
+    return f"s3://{BUCKET}/{key}"
 
-def put_s3_json(uri, value, sort_keys=False):
-    bucket, key = s3_parts(uri)
-    boto3.client("s3").put_object(Bucket=bucket, Key=key, Body=(json.dumps(value, indent=2, sort_keys=sort_keys) + "\n").encode(),
-                                  ContentType="application/json", ServerSideEncryption="AES256")
-    return uri
-
-def job_table(params):
-    return boto3.resource("dynamodb").Table(params["jobs_table"])
+def put_s3_file(key, path, **kwargs):
+    with path.open("rb") as body:
+        S3.put_object(Bucket=BUCKET, Key=key, Body=body, ServerSideEncryption="AES256", **kwargs)
+    return f"s3://{BUCKET}/{key}"
 
 def load_job():
-    bucket, key = s3_parts(os.environ["PARAMS_S3_URI"])
-    params = json.loads(boto3.client("s3").get_object(Bucket=bucket, Key=key)["Body"].read())
-    if not isinstance(params, dict):
-        raise ValueError("params.json must contain an object")
-    credential = boto3.client("secretsmanager").get_secret_value(SecretId=params["credential_secret_arn"]).get("SecretString")
+    job_id = os.environ["JOB_ID"]
+    job = TABLE.get_item(Key={"pk": f"JOB#{job_id}"}, ConsistentRead=True)["Item"]
+    params = {"job_id": job_id, "case_id": job["case_id"], **job["spec"]}
+    params["timeout_seconds"] = int(params["timeout_seconds"])
+    secrets_manager = boto3.client("secretsmanager")
+    secret_id = os.environ["CREDENTIAL_SECRET_ARN"]
+    credential = secrets_manager.get_secret_value(SecretId=secret_id).get("SecretString")
     if not credential:
         raise ValueError("credential secret must be a nonempty string")
-    PRIVATE.mkdir(parents=True, mode=0o700, exist_ok=True)
-    PRIVATE.chmod(0o700)
-    write_json(PRIVATE / "params.json", params)
+    secrets_manager.delete_secret(SecretId=secret_id, ForceDeleteWithoutRecovery=True)
     return params, credential
 
 def mark_running(params, started_at, viewer_uri):
     deadline = time.monotonic() + 60
     while True:
         try:
-            job_table(params).update_item(Key={"pk": f'JOB#{params["job_id"]}'},
+            TABLE.update_item(Key={"pk": f'JOB#{params["job_id"]}'},
                 UpdateExpression="SET #status=:running, started_at=:at, updated_at=:at, viewer_connection_s3_uri=:viewer",
                 ConditionExpression="#status=:scheduled", ExpressionAttributeNames={"#status": "status"},
                 ExpressionAttributeValues={":scheduled": "SCHEDULED", ":running": "RUNNING", ":at": started_at, ":viewer": viewer_uri})
@@ -79,10 +78,9 @@ def mark_running(params, started_at, viewer_uri):
 def record_execution(params, report):
     if report["job_id"] != params["job_id"]:
         raise ValueError("execution report job_id does not match params.json")
-    bucket, prefix = s3_parts(params["output_s3_uri"])
-    uri = put_s3_json(f"s3://{bucket}/{prefix.rstrip('/')}/execution.json", report, True)
+    uri = put_s3_json(f'runs/{params["job_id"]}/execution.json', report, True)
     recorded_at = now()
-    job_table(params).update_item(Key={"pk": f'JOB#{params["job_id"]}'},
+    TABLE.update_item(Key={"pk": f'JOB#{params["job_id"]}'},
         UpdateExpression="SET execution_s3_uri=:uri, execution_recorded_at=:at, agent_exit_code=:code, agent_timed_out=:timed_out, runner_error=:error, updated_at=:at",
         ConditionExpression="#status=:running", ExpressionAttributeNames={"#status": "status"},
         ExpressionAttributeValues={":running": "RUNNING", ":uri": uri, ":at": recorded_at,
@@ -137,8 +135,7 @@ def prepare_accounts(params):
     connection = account | {"schema_version": 1, "job_id": params["job_id"],
                             "batch_job_id": os.environ["AWS_BATCH_JOB_ID"], "auth_port": 3724,
                             "world_port": 8085, "character": "Observer"}
-    bucket, _ = s3_parts(params["output_s3_uri"])
-    viewer_uri = put_s3_json(f's3://{bucket}/viewer/{params["job_id"]}/connection.json', connection)
+    viewer_uri = put_s3_json(f'viewer/{params["job_id"]}/connection.json', connection)
     started_at = now()
     mark_running(params, started_at, viewer_uri)
     return started_at
@@ -176,7 +173,8 @@ def start_server():
 def agent_env():
     env = trusted_env()
     for name in tuple(env):
-        if name.startswith("AWS_") or name in {"PARAMS_S3_URI", "ECS_CONTAINER_METADATA_URI",
+        if name.startswith("AWS_") or name in {"ARTIFACTS_BUCKET", "CREDENTIAL_SECRET_ARN", "JOB_ID",
+                                                "JOBS_TABLE", "ECS_CONTAINER_METADATA_URI",
                                                 "ECS_CONTAINER_METADATA_URI_V4", "DOCKER_HOST"}:
             env.pop(name, None)
     return env | {"HOME": "/home/node", "TMPDIR": f"{WORKSPACE}/tmp", "AWS_EC2_METADATA_DISABLED": "true"}
@@ -231,6 +229,35 @@ def run_agent(params, credential):
         finally:
             STATE["agent"] = None
 
+def snapshot_state(params):
+    checked(COMPOSE + ["stop", "--timeout", "60", "worldserver", "authserver"],
+            stdout=subprocess.DEVNULL)
+    root = Path("/run/agent-wow-state")
+    root.mkdir(mode=0o700)
+    archive = root / "acore_characters.sql.gz"
+    errors = root / "mysqldump.log"
+    command = COMPOSE + ["exec", "-T", "database", "sh", "-c",
+        'exec mysqldump --single-transaction --quick --hex-blob --no-tablespaces '
+        '-uroot -p"$MYSQL_ROOT_PASSWORD" --databases acore_characters']
+    with archive.open("wb") as output, errors.open("wb") as error_log:
+        dump = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=error_log, env=trusted_env())
+        try:
+            with gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0) as compressed:
+                shutil.copyfileobj(dump.stdout, compressed)
+        finally:
+            dump.stdout.close()
+            returncode = dump.wait()
+    if returncode:
+        raise RuntimeError("character database dump failed")
+    digest = hashlib.sha256()
+    with archive.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    key = f'runs/{params["job_id"]}/acore_characters.sql.gz'
+    uri = put_s3_file(key, archive, ContentType="application/sql", ContentEncoding="gzip")
+    return {"database": "acore_characters", "format": "mysql-dump-gzip", "uri": uri,
+            "sha256": digest.hexdigest(), "size_bytes": archive.stat().st_size}
+
 def cleanup():
     if STATE["agent"] and STATE["agent"].poll() is None:
         os.killpg(STATE["agent"].pid, signal.SIGTERM)
@@ -257,7 +284,8 @@ def main():
     signal.signal(signal.SIGINT, stop)
     params = credential = None
     phase, started, started_at = "load_job", time.monotonic(), now()
-    report = {"agent_exit_code": None, "agent_timed_out": False, "runner_error": None}
+    report = {"agent_exit_code": None, "agent_timed_out": False, "runner_error": None,
+              "state_artifact": None}
     try:
         params, credential = load_job()
         phase = "prepare_workspace"; prepare_workspace()
@@ -267,18 +295,17 @@ def main():
         checked(["iptables", "-I", "OUTPUT", "-m", "owner", "--uid-owner", "node", "-d", "169.254.0.0/16", "-j", "REJECT"])
         phase = "run_agent"
         report["agent_exit_code"], report["agent_timed_out"] = run_agent(params, credential)
+        phase = "snapshot_state"
+        report["state_artifact"] = snapshot_state(params)
     except (Exception, KeyboardInterrupt) as error:
         report["runner_error"] = f"{phase}_failed"
-        OUTPUT.mkdir(parents=True, exist_ok=True)
-        (OUTPUT / "runner.log").write_text(f"Runner failed during {phase}: {type(error).__name__}\n")
+        print(f"Runner failed during {phase}: {type(error).__name__}", flush=True)
     finally:
         cleanup()
     if not params:
         return 1
     report |= {"job_id": params["job_id"], "started_at": started_at, "finished_at": now(),
                "elapsed_ms": round((time.monotonic() - started) * 1000)}
-    OUTPUT.mkdir(parents=True, exist_ok=True)
-    write_json(OUTPUT / "execution.json", report)
     try:
         record_execution(params, report)
     except Exception as error:
