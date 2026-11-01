@@ -11,7 +11,7 @@
     }
   ],
   "claim_url": "https://10c315yz1k.execute-api.us-west-2.amazonaws.com/claim",
-  "runner_image_digest": "sha256:20b41c793fe2e1b52312c15f440f00c1f69ee7be2135145922cd76883772a266",
+  "runner_image_digest": "sha256:9851f63ff0e38976a77dda0805510454bc1851f798fabe50c5e3785b27ef56bf",
   "timeout_seconds": 21600,
   "trial_ids": [
     "1",
@@ -104,5 +104,5 @@
       "effort": "medium"
     }
   ],
-  "client_image_digest": "sha256:d4de1639df1c49c05961a1d716459895a060bc1b98d3211ea5a2b9c5a5e5614b"
+  "client_image_digest": "sha256:e2be3385a22bf9f214a282f180310ff881f894d6f5c8574b991e1bb950f2035c"
 }
