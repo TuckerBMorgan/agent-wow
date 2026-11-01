@@ -15,24 +15,30 @@ tofu -chdir="$script_dir" apply -target=aws_ecr_repository.runner
 
 RUNNER_REPOSITORY="$(tofu -chdir="$script_dir" output -raw runner_repository_url)"
 RUNNER_REGISTRY="${RUNNER_REPOSITORY%%/*}"
-RUNNER_TAG="benchmark-v3-$(date -u +%Y%m%dT%H%M%SZ)"
+RUNNER_TAG="benchmark-v3-server-$(date -u +%Y%m%dT%H%M%SZ)"
+CLIENT_TAG="${RUNNER_TAG/server/client}"
 RUNNER_COMMIT="$(git rev-parse HEAD)"
 
 # log into aws
 aws ecr get-login-password --region "$AWS_REGION" |
   docker login --username AWS --password-stdin "$RUNNER_REGISTRY"
 
-# build the docker image
-docker buildx build \
-  --platform linux/amd64 \
-  --build-arg "AGENT_WOW_REF=$RUNNER_COMMIT" \
-  --tag "$RUNNER_REPOSITORY:$RUNNER_TAG" \
-  --progress plain \
-  --push \
-  .
+# Build both roles from the local source tree, including uncommitted client changes.
+for target in server client; do
+  tag="$RUNNER_TAG"
+  if [[ "$target" == client ]]; then tag="$CLIENT_TAG"; fi
+  docker buildx build \
+    --platform linux/amd64 \
+    --target "$target" \
+    --label "org.opencontainers.image.revision=$RUNNER_COMMIT" \
+    --tag "$RUNNER_REPOSITORY:$tag" \
+    --progress plain \
+    --push \
+    .
+done
 
 mkdir -p "$repo_root/tmp"
-printf '%s\n' "$AWS_REGION" "$RUNNER_REPOSITORY" "$RUNNER_TAG" \
+printf '%s\n' "$AWS_REGION" "$RUNNER_REPOSITORY" "$RUNNER_TAG" "$CLIENT_TAG" \
   > "$repo_root/tmp/runner-image.txt"
 printf 'Uploaded %s:%s\n' "$RUNNER_REPOSITORY" "$RUNNER_TAG"
 

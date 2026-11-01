@@ -2,3 +2,14 @@
 !Dockerfile
 !docker/
 !docker/**
+!go.mod
+!go.sum
+!main.go
+!cmd/
+!cmd/**
+!internal/
+!internal/**
+!pkg/
+!pkg/**
+!api/
+!api/**

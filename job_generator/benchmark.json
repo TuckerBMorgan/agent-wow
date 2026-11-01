@@ -11,7 +11,7 @@
     }
   ],
   "claim_url": "https://10c315yz1k.execute-api.us-west-2.amazonaws.com/claim",
-  "runner_image_digest": "sha256:45d924091ee35ca73854b3f6f259f4b5da72e97f32f4c8e626bc882aa0b0081a",
+  "runner_image_digest": "sha256:20b41c793fe2e1b52312c15f440f00c1f69ee7be2135145922cd76883772a266",
   "timeout_seconds": 21600,
   "trial_ids": [
     "1",
@@ -103,5 +103,6 @@
       "model": "claude-opus-5-5",
       "effort": "medium"
     }
-  ]
+  ],
+  "client_image_digest": "sha256:d4de1639df1c49c05961a1d716459895a060bc1b98d3211ea5a2b9c5a5e5614b"
 }

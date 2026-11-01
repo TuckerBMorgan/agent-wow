@@ -5,7 +5,9 @@ import json
 import os
 import secrets
 import shutil
+import shlex
 import signal
+import socket
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -13,13 +15,16 @@ from pathlib import Path
 import boto3
 import docker
 from botocore.exceptions import ClientError
+from botocore.config import Config
 
 WORKSPACE = Path("/workspace")
 LOGS = WORKSPACE / "logs"
 COMPOSE = ["docker", "compose", "--project-directory", f"{WORKSPACE}/server", "--file", f"{WORKSPACE}/server/compose.yaml"]
-STATE = {"agent": None, "dockerd": None, "docker_log": None}
+STATE = {"client": None, "input_version": None, "dockerd": None, "docker_log": None}
 TABLE = boto3.resource("dynamodb").Table(os.environ["JOBS_TABLE"])
-S3 = boto3.client("s3")
+S3 = boto3.client("s3", config=Config(signature_version="s3v4", connect_timeout=5, read_timeout=15,
+                                     retries={"max_attempts": 2}))
+EC2 = boto3.client("ec2", config=Config(connect_timeout=5, read_timeout=15, retries={"max_attempts": 2}))
 BUCKET = os.environ["ARTIFACTS_BUCKET"]
 
 def now():
@@ -132,7 +137,7 @@ def ensure_account(root=WORKSPACE / "config", username="AGENT", env=None):
     return account, client
 
 def prepare_accounts(params):
-    ensure_account(env=trusted_env())
+    player, _ = ensure_account(env=trusted_env())
     root = Path("/run/agent-wow-observer")
     env = trusted_env() | {"AGENT_WOW_CONFIG_DIR": str(root), "AGENT_WOW_DATA_DIR": str(root / "data")}
     account, client = ensure_account(root, "WATCHER", env)
@@ -143,25 +148,18 @@ def prepare_accounts(params):
     if not any(character["name"] == "Observer" for character in json.loads(listing.stdout)["characters"]):
         if client("char", "create", "--name", "Observer", "--race", "orc", "--class", "warrior").returncode:
             raise RuntimeError("Viewer character creation failed")
-    connection = account | {"schema_version": 1, "job_id": params["job_id"],
+    connection = account | {"schema_version": 1, "job_id": params["job_id"], "host": server_address(),
                             "batch_job_id": os.environ["AWS_BATCH_JOB_ID"], "auth_port": 3724,
                             "world_port": 8085, "character": "Observer"}
     viewer_uri = put_s3_json(f'viewer/{params["job_id"]}/connection.json', connection)
-    started_at = now()
-    mark_running(params, started_at, viewer_uri)
-    return started_at
+    return player, viewer_uri
 
 def prepare_workspace():
-    for name in ("config", "data", "modules", "journal", "logs", "server", "tmp"):
+    for name in ("config", "data", "logs", "server"):
         (WORKSPACE / name).mkdir(parents=True, exist_ok=True)
-    for source, destination in (("/opt/agent-wow", "agent-wow"), ("/opt/go-module-template", "go-module-template")):
-        shutil.copytree(source, WORKSPACE / destination, dirs_exist_ok=True)
-    shutil.copy2("/opt/workspace-template/AGENTS.md", WORKSPACE / "AGENTS.md")
-    (WORKSPACE / "CLAUDE.md").symlink_to("AGENTS.md")
-    (WORKSPACE / "azerothcore-reference").symlink_to("/opt/azerothcore-reference")
     shutil.copy2("/opt/server/compose.yaml", WORKSPACE / "server/compose.yaml")
     env_file = WORKSPACE / "server/.env"
-    env_file.write_text(f"MYSQL_ROOT_PASSWORD={secrets.token_hex(24)}\n")
+    env_file.write_text(f"MYSQL_ROOT_PASSWORD={secrets.token_hex(24)}\nSERVER_BIND_ADDRESS=0.0.0.0\n")
     env_file.chmod(0o600)
 
 def start_server():
@@ -181,66 +179,123 @@ def start_server():
         checked(["docker", "load", "--input", str(archive)])
     checked(COMPOSE + ["up", "--wait", "--wait-timeout", "1800", "--pull", "never"])
 
-def agent_env():
-    env = trusted_env()
-    for name in tuple(env):
-        if name.startswith("AWS_") or name in {"ARTIFACTS_BUCKET", "CREDENTIAL_SECRET_ARN", "JOB_ID",
-                                                "JOBS_TABLE", "ECS_CONTAINER_METADATA_URI",
-                                                "ECS_CONTAINER_METADATA_URI_V4", "DOCKER_HOST"}:
-            env.pop(name, None)
-    return env | {"HOME": "/home/node", "TMPDIR": f"{WORKSPACE}/tmp", "AWS_EC2_METADATA_DISABLED": "true"}
+def server_address():
+    if os.environ.get("SERVER_HOST"):
+        return os.environ["SERVER_HOST"]
+    # Batch EC2 jobs use host networking. This selects the host's primary IP
+    # without contacting the destination or reading instance credentials.
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as connection:
+        connection.connect(("1.1.1.1", 80))
+        return connection.getsockname()[0]
 
-def sandbox(command):
-    return ["runuser", "-u", "node", "--", "bwrap", "--die-with-parent", "--new-session", "--unshare-pid",
-            "--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp",
-            "--tmpfs", "/run", "--tmpfs", "/root",
-            "--tmpfs", "/var/lib/docker", "--bind", str(WORKSPACE), str(WORKSPACE), "--tmpfs", f"{WORKSPACE}/server",
-            "--bind", "/home/node", "/home/node", "--chdir", str(WORKSPACE), "--", *command]
+def client_data(prefix, name):
+    try:
+        value = S3.get_object(Bucket=BUCKET, Key=prefix + name)
+    except ClientError as error:
+        if error.response["Error"]["Code"] in {"NoSuchKey", "404"}:
+            return None
+        raise
+    with value["Body"] as body:
+        if value["ContentLength"] > 65536:
+            raise ValueError("client report is too large")
+        return json.loads(body.read())
 
-def harness(params, credential):
-    env = agent_env()
-    if params["harness"] == "claude":
-        env |= {"CLAUDE_CODE_OAUTH_TOKEN": credential, "DISABLE_AUTOUPDATER": "1"}
-        command = ["claude", "-p", "--model", params["model"], "--effort", params["effort"],
-                   "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"]
-    else:
-        auth, home = json.loads(credential), Path("/home/node/.codex")
-        tokens = auth.get("tokens", {})
-        if auth.get("auth_mode") != "chatgpt" or not all(tokens.get(name) for name in
-                                                           ("access_token", "refresh_token", "id_token")): raise ValueError("invalid Codex subscription login")
-        home.mkdir(parents=True, mode=0o700, exist_ok=True)
-        auth.pop("OPENAI_API_KEY", None)
-        write_json(home / "auth.json", auth)
-        (home / "config.toml").write_text('cli_auth_credentials_store = "file"\nforced_login_method = "chatgpt"\n')
-        env["CODEX_HOME"] = str(home)
-        command = ["codex", "--config", 'cli_auth_credentials_store="file"', "--config",
-            'forced_login_method="chatgpt"', "--config", 'sandbox_workspace_write.network_access=true',
-            "--model", params["model"], "--config",
-            f'model_reasoning_effort="{params["effort"]}"', "--ask-for-approval", "never", "exec",
-            "--sandbox", "workspace-write", "--cd", str(WORKSPACE), "--skip-git-repo-check",
-            "--color", "never", "--output-last-message", str(LOGS / "final-report.txt"), "-"]
-    checked(["chown", "-R", "node:node", str(WORKSPACE), "/home/node"])
-    return sandbox(command), env
+def client_userdata(input_url, image, job_id, timeout_seconds):
+    region = EC2.meta.region_name
+    registry = image.split("/", 1)[0]
+    command = shlex.join(["docker", "run", "--rm", "--privileged", "--network", "host",
+        "--env", f"JOB_INPUT_URL={input_url}", "--env", f"ARTIFACTS_BUCKET={BUCKET}",
+        "--env", f"JOB_ID={job_id}",
+        "--env", f"AWS_DEFAULT_REGION={region}", image])
+    # Only a short-lived download capability is in user data. Actual game and
+    # model credentials are fetched privately by the client and never logged.
+    return ("#!/bin/bash\nset -euo pipefail\ntrap 'shutdown -h now' EXIT\n"
+        f"shutdown -h +{(int(timeout_seconds) + 2159) // 60}\n"
+        "dnf install -y docker awscli-2\nsystemctl start docker\n"
+        f"aws ecr get-login-password --region {shlex.quote(region)} | "
+        f"docker login --username AWS --password-stdin {shlex.quote(registry)}\n"
+        + command + "\n")
 
-def run_agent(params, credential):
-    command, env = harness(params, credential)
-    with (LOGS / "agent.log").open("w") as log:
-        agent = subprocess.Popen(command, cwd=WORKSPACE, env=env, stdin=subprocess.PIPE, stdout=log,
-                                 stderr=subprocess.STDOUT, text=True, start_new_session=True)
-        STATE["agent"] = agent
+def run_client(params, credential, player, viewer_uri, report):
+    digest = params["client_image_digest"]
+    if digest != os.environ["CLIENT_IMAGE_DIGEST"]:
+        raise ValueError("job client image does not match the deployed client image")
+    host = server_address()
+    key = f'inputs/{params["job_id"]}.json'
+    payload = {"params": params, "credential": credential, "player": player, "server_host": host}
+    uploaded = S3.put_object(Bucket=BUCKET, Key=key, Body=json.dumps(payload).encode(),
+                             ServerSideEncryption="AES256", ContentType="application/json")
+    STATE["input_version"] = (key, uploaded["VersionId"])
+    url = S3.generate_presigned_url("get_object", Params={"Bucket": BUCKET, "Key": key,
+        "VersionId": uploaded["VersionId"]}, ExpiresIn=1800)
+    image = os.environ["CLIENT_REPOSITORY"] + "@" + digest
+    launched = EC2.run_instances(
+        LaunchTemplate={"LaunchTemplateId": os.environ["CLIENT_LAUNCH_TEMPLATE_ID"],
+                        "Version": os.environ["CLIENT_LAUNCH_TEMPLATE_VERSION"]},
+        MinCount=1, MaxCount=1, ClientToken=params["job_id"],
+        UserData=client_userdata(url, image, params["job_id"], params["timeout_seconds"]),
+        TagSpecifications=[{"ResourceType": "instance", "Tags": [
+            {"Key": "agent-wow-role", "Value": "client"},
+            {"Key": "agent-wow-job-id", "Value": params["job_id"]}]}],
+    )["Instances"][0]
+    instance = launched["InstanceId"]
+    STATE["client"] = instance
+    print(f"Client instance: {instance}", flush=True)
+    prefix = f'clients/{os.environ["CLIENT_ROLE_ID"]}:{instance}/'
+    report.update(client_instance_id=instance, client_image_digest=digest, server_private_ip=host,
+                  client_ami_id=launched["ImageId"], client_private_ip=launched["PrivateIpAddress"])
+    TABLE.update_item(Key={"pk": f'JOB#{params["job_id"]}'},
+        UpdateExpression="SET client_instance_id=:client, client_image_digest=:image, server_private_ip=:host, client_private_ip=:ip, client_ami_id=:ami",
+        ExpressionAttributeValues={":client": instance, ":image": digest, ":host": host,
+                                   ":ip": launched["PrivateIpAddress"], ":ami": launched["ImageId"]})
+    ready, deadline = False, time.monotonic() + 1800
+    while True:
+        readiness = client_data(prefix, "ready.json") if not ready else None
+        if readiness:
+            if readiness.get("job_id") != params["job_id"]:
+                raise ValueError("client readiness job_id does not match")
+            ready, deadline = True, time.monotonic() + params["timeout_seconds"] + 120
+            report["started_at"] = now()
+            mark_running(params, report["started_at"], viewer_uri)
+            delete_input()
+        result = client_data(prefix, "client-result.json")
+        if result is not None:
+            if result.get("job_id") != params["job_id"]:
+                raise ValueError("client report job_id does not match")
+            for name in ("agent_exit_code", "agent_timed_out", "runner_error"):
+                report[name] = result[name]
+            for name in ("agent.log", "final-report.txt", "client-dockerd.log"):
+                source = prefix + name
+                try:
+                    key = f'runs/{params["job_id"]}/logs/{name}'
+                    S3.copy_object(Bucket=BUCKET, Key=key, CopySource={"Bucket": BUCKET, "Key": source},
+                                   ServerSideEncryption="AES256")
+                    report["log_artifacts"][name] = f"s3://{BUCKET}/{key}"
+                except ClientError as error:
+                    if error.response["Error"]["Code"] not in {"NoSuchKey", "404"}:
+                        raise
+            return
         try:
-            agent.communicate(params["prompt"], timeout=params["timeout_seconds"])
-            return agent.returncode, False
-        except subprocess.TimeoutExpired:
-            os.killpg(agent.pid, signal.SIGTERM)
-            try:
-                agent.wait(timeout=30)
-            except subprocess.TimeoutExpired:
-                os.killpg(agent.pid, signal.SIGKILL)
-                agent.wait()
-            return 124, True
-        finally:
-            STATE["agent"] = None
+            state = EC2.describe_instances(InstanceIds=[instance])["Reservations"][0]["Instances"][0]["State"]["Name"]
+        except ClientError as error:
+            if error.response["Error"]["Code"] != "InvalidInstanceID.NotFound":
+                raise
+            state = "pending"
+        if state in {"shutting-down", "terminated", "stopping", "stopped"}:
+            report["runner_error"] = "client_stopped_without_report"
+            raise RuntimeError("client stopped without an execution report; inspect its EC2 console")
+        if time.monotonic() >= deadline:
+            report["agent_timed_out"] = ready
+            report["agent_exit_code"] = 124 if ready else None
+            report["runner_error"] = "client_execution_deadline_exceeded" if ready else "client_startup_deadline_exceeded"
+            raise TimeoutError("client startup or execution deadline exceeded")
+        time.sleep(5)
+
+def delete_input():
+    if STATE["input_version"]:
+        key, version = STATE["input_version"]
+        S3.delete_object(Bucket=BUCKET, Key=key, VersionId=version)
+        STATE["input_version"] = None
 
 def snapshot_state(params):
     checked(COMPOSE + ["stop", "--timeout", "60", "worldserver", "authserver"],
@@ -272,8 +327,16 @@ def snapshot_state(params):
             "sha256": digest.hexdigest(), "size_bytes": archive.stat().st_size}
 
 def cleanup():
-    if STATE["agent"] and STATE["agent"].poll() is None:
-        os.killpg(STATE["agent"].pid, signal.SIGTERM)
+    errors = []
+    if STATE["client"]:
+        try:
+            EC2.terminate_instances(InstanceIds=[STATE["client"]])
+        except Exception as error:
+            errors.append(error)
+    try:
+        delete_input()
+    except Exception as error:
+        errors.append(error)
     dockerd = STATE["dockerd"]
     if dockerd and dockerd.poll() is None:
         subprocess.run(COMPOSE + ["down", "--timeout", "30"], stdout=subprocess.DEVNULL,
@@ -286,10 +349,10 @@ def cleanup():
             dockerd.wait()
     if STATE["docker_log"]:
         STATE["docker_log"].close()
+    if errors:
+        raise errors[0]
 
 def stop(signum, _frame):
-    if STATE["agent"] and STATE["agent"].poll() is None:
-        os.killpg(STATE["agent"].pid, signum)
     raise KeyboardInterrupt
 
 def main():
@@ -298,20 +361,18 @@ def main():
     params, credential = {"job_id": os.environ["JOB_ID"]}, None
     phase, started, started_at = "load_job", time.monotonic(), now()
     report = {"agent_exit_code": None, "agent_timed_out": False, "runner_error": None,
-              "state_artifact": None, "log_artifacts": {}}
+              "state_artifact": None, "log_artifacts": {}, "started_at": started_at}
     try:
         params, credential = load_job()
         phase = "prepare_workspace"; prepare_workspace()
         phase = "start_server"; start_server()
-        phase = "prepare_accounts"; started_at = prepare_accounts(params)
-        phase = "sandbox_setup"
-        checked(["iptables", "-I", "OUTPUT", "-m", "owner", "--uid-owner", "node", "-d", "169.254.0.0/16", "-j", "REJECT"])
-        phase = "run_agent"
-        report["agent_exit_code"], report["agent_timed_out"] = run_agent(params, credential)
+        phase = "prepare_accounts"; player, viewer_uri = prepare_accounts(params)
+        phase = "run_client"
+        run_client(params, credential, player, viewer_uri, report)
         phase = "snapshot_state"
         report["state_artifact"] = snapshot_state(params)
     except (Exception, KeyboardInterrupt) as error:
-        report["runner_error"] = f"{phase}_failed"
+        report["runner_error"] = report["runner_error"] or f"{phase}_failed"
         print(f"Runner failed during {phase}: {type(error).__name__}", flush=True)
     finally:
         try:
@@ -324,7 +385,7 @@ def main():
     except Exception as error:
         report["runner_error"] = report["runner_error"] or "log_upload_failed"
         print(f"Log upload failed: {type(error).__name__}", flush=True)
-    report |= {"job_id": params["job_id"], "started_at": started_at, "finished_at": now(),
+    report |= {"job_id": params["job_id"], "finished_at": now(),
                "elapsed_ms": round((time.monotonic() - started) * 1000)}
     try:
         record_execution(params, report)

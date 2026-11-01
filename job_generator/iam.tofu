@@ -31,8 +31,49 @@ resource "aws_iam_role_policy" "runner_job" {
         Action = "s3:PutObject"
         Resource = [
           "${aws_s3_bucket.artifacts.arn}/runs/*",
-          "${aws_s3_bucket.artifacts.arn}/viewer/*"
+          "${aws_s3_bucket.artifacts.arn}/viewer/*",
+          "${aws_s3_bucket.artifacts.arn}/inputs/*"
         ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = "s3:GetObject"
+        Resource = "${aws_s3_bucket.artifacts.arn}/clients/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = "s3:ListBucket"
+        Resource = aws_s3_bucket.artifacts.arn
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObjectVersion", "s3:DeleteObjectVersion"]
+        Resource = "${aws_s3_bucket.artifacts.arn}/inputs/*"
+      },
+      {
+        Effect    = "Allow"
+        Action    = "ec2:RunInstances"
+        Resource  = "*"
+        Condition = { ArnEquals = { "ec2:LaunchTemplate" = aws_launch_template.client.arn } }
+      },
+      {
+        Effect    = "Allow"
+        Action    = "ec2:CreateTags"
+        Resource  = "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:instance/*"
+        Condition = { StringEquals = { "ec2:CreateAction" = "RunInstances" } }
+      },
+      {
+        Effect    = "Allow"
+        Action    = "ec2:TerminateInstances"
+        Resource  = "arn:${data.aws_partition.current.partition}:ec2:${data.aws_region.current.region}:${data.aws_caller_identity.current.account_id}:instance/*"
+        Condition = { StringEquals = { "ec2:ResourceTag/agent-wow-role" = "client" } }
+      },
+      { Effect = "Allow", Action = "ec2:DescribeInstances", Resource = "*" },
+      {
+        Effect    = "Allow"
+        Action    = "iam:PassRole"
+        Resource  = aws_iam_role.client.arn
+        Condition = { StringEquals = { "iam:PassedToService" = "ec2.amazonaws.com" } }
       },
       {
         Effect   = "Allow"
@@ -47,6 +88,40 @@ resource "aws_iam_role_policy" "runner_job" {
         ]
         Resource = local.job_secret_arn
       }
+    ]
+  })
+}
+
+resource "aws_iam_role" "client" {
+  name = "agent-wow-client"
+  assume_role_policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = [{ Effect = "Allow", Principal = { Service = "ec2.amazonaws.com" }, Action = "sts:AssumeRole" }]
+  })
+}
+
+resource "aws_iam_instance_profile" "client" {
+  name = "agent-wow-client"
+  role = aws_iam_role.client.name
+}
+
+resource "aws_iam_role_policy" "client" {
+  name = "agent-wow-client-artifacts"
+  role = aws_iam_role.client.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "s3:PutObject"
+        Resource = "${aws_s3_bucket.artifacts.arn}/clients/$${aws:userid}/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["ecr:GetDownloadUrlForLayer", "ecr:BatchGetImage"]
+        Resource = aws_ecr_repository.runner.arn
+      },
+      { Effect = "Allow", Action = "ecr:GetAuthorizationToken", Resource = "*" }
     ]
   })
 }

@@ -2,34 +2,35 @@
 ARG GO_VERSION=1.27.2
 FROM golang:${GO_VERSION}-bookworm AS agent-wow-builder
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
-ARG AGENT_WOW_REPOSITORY=https://github.com/TuckerBMorgan/agent-wow.git
-ARG AGENT_WOW_REF=main
 # Avoid mismatched downloads through HTTP proxies that mishandle pipelining.
 RUN apt-get -o Acquire::http::Pipeline-Depth=0 update \
     && apt-get -o Acquire::http::Pipeline-Depth=0 install -y --no-install-recommends ca-certificates git \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
-RUN git init . && git remote add origin "${AGENT_WOW_REPOSITORY}" \
-    && git fetch --depth 1 origin "${AGENT_WOW_REF}" && git checkout --detach FETCH_HEAD
-RUN go mod download && mkdir -p /out && go build -trimpath -o /out/agent-wow . \
+ENV GODEBUG=http2client=0
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY main.go ./
+COPY cmd ./cmd
+COPY internal ./internal
+COPY pkg ./pkg
+COPY api ./api
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    mkdir -p /out && go build -trimpath -o /out/agent-wow . \
     && GOBIN=/out go install google.golang.org/protobuf/cmd/protoc-gen-go \
     && GOBIN=/out go install google.golang.org/grpc/cmd/protoc-gen-go-grpc
 
-FROM node:24-bookworm-slim
+FROM node:24-bookworm-slim AS node
+FROM debian:bookworm-slim AS runtime-base
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG DEBIAN_FRONTEND=noninteractive
-ARG CODEX_VERSION=0.163.0
-ARG CLAUDE_VERSION=2.1.306
-ARG AZEROTHCORE_REF=591f79586bbf04e5cdbb2a81bd98c5fd3b7192bd
-LABEL org.opencontainers.image.azerothcore.revision="${AZEROTHCORE_REF}"
-ENV PATH="/usr/local/go/bin:/opt/venv/bin:/root/go/bin:/home/node/go/bin:${PATH}" \
+ENV PATH="/usr/local/go/bin:/opt/venv/bin:/home/node/go/bin:${PATH}" \
     DOCKER_HOST=unix:///var/run/docker.sock AGENT_WOW_CONFIG_DIR=/workspace/config \
     AGENT_WOW_DATA_DIR=/workspace/data AGENT_WOW_MODULE_DIR=/workspace/modules \
     PYTHONUNBUFFERED=1
 RUN apt-get -o Acquire::http::Pipeline-Depth=0 update \
     && apt-get -o Acquire::http::Pipeline-Depth=0 install -y --no-install-recommends \
-      bash ca-certificates curl git jq ripgrep build-essential protobuf-compiler \
-      python3 python3-venv procps iproute2 iptables tini util-linux bubblewrap skopeo \
+      bash ca-certificates curl git jq python3 python3-venv procps iproute2 iptables tini util-linux \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list \
@@ -37,12 +38,24 @@ RUN apt-get -o Acquire::http::Pipeline-Depth=0 update \
     && apt-get -o Acquire::http::Pipeline-Depth=0 install -y --no-install-recommends \
       docker-ce docker-ce-cli containerd.io docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/venv && /opt/venv/bin/pip install --no-cache-dir boto3 docker
+COPY --from=agent-wow-builder /out/agent-wow /usr/local/bin/
+WORKDIR /workspace
+VOLUME ["/var/lib/docker"]
+
+FROM runtime-base AS client
+ARG CODEX_VERSION=0.163.0
+ARG CLAUDE_VERSION=2.1.306
+ARG AZEROTHCORE_REF=591f79586bbf04e5cdbb2a81bd98c5fd3b7192bd
+LABEL org.opencontainers.image.azerothcore.revision="${AZEROTHCORE_REF}"
+RUN apt-get update && apt-get install -y --no-install-recommends ripgrep build-essential protobuf-compiler \
+    && rm -rf /var/lib/apt/lists/* && useradd --create-home --uid 1000 --shell /bin/bash node
+COPY --from=node /usr/local/ /usr/local/
 RUN npm install --global "@openai/codex@${CODEX_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_VERSION}" \
-    && npm cache clean --force && python3 -m venv /opt/venv \
-    && /opt/venv/bin/pip install --no-cache-dir boto3 docker \
+    && npm cache clean --force \
     && install -d -m 0700 -o node -g node /home/node/{.codex,.claude,.cache,go}
 COPY --from=agent-wow-builder /usr/local/go /usr/local/go
-COPY --from=agent-wow-builder /out/agent-wow /out/protoc-gen-go /out/protoc-gen-go-grpc /usr/local/bin/
+COPY --from=agent-wow-builder /out/protoc-gen-go /out/protoc-gen-go-grpc /usr/local/bin/
 COPY --from=agent-wow-builder /src /opt/agent-wow
 RUN git clone --depth 1 https://github.com/agent-wow/go-module-template.git /opt/go-module-template \
     && git clone --depth 1 https://github.com/TuckerBMorgan/agent-wow-workspace.git /opt/workspace-template \
@@ -50,8 +63,14 @@ RUN git clone --depth 1 https://github.com/agent-wow/go-module-template.git /opt
     && git -C /opt/azerothcore-reference remote add origin https://github.com/azerothcore/azerothcore-wotlk.git \
     && git -C /opt/azerothcore-reference fetch --depth 1 origin "${AZEROTHCORE_REF}" \
     && git -C /opt/azerothcore-reference checkout --detach FETCH_HEAD \
-    && test "$(git -C /opt/azerothcore-reference rev-parse HEAD)" = "${AZEROTHCORE_REF}" \
-    && mkdir -p /opt/server /opt/server-images /workspace
+    && test "$(git -C /opt/azerothcore-reference rev-parse HEAD)" = "${AZEROTHCORE_REF}"
+COPY --chmod=755 docker/client_runner.py /usr/local/bin/client_runner.py
+RUN printf '%s\n' 'export PATH="/usr/local/go/bin:/opt/venv/bin:$HOME/go/bin:$PATH"' > /etc/profile.d/agent-wow-path.sh
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/client_runner.py"]
+
+FROM runtime-base AS server
+RUN apt-get update && apt-get install -y --no-install-recommends skopeo \
+    && rm -rf /var/lib/apt/lists/* && mkdir -p /opt/server /opt/server-images
 ARG MYSQL_IMAGE=docker.io/library/mysql@sha256:a0225d1ea6631c8bc2385dc4c2faba17bbf1834ecf369e1659a9a382bd8d5dd7
 ARG ACORE_DB_IMAGE=docker.io/acore/ac-wotlk-db-import@sha256:46856838c54cabfff110f532d587085613f4ef03d8515e7dd3870b037c0291b2
 ARG ACORE_DATA_IMAGE=docker.io/acore/ac-wotlk-client-data@sha256:fc880ca1344cc1d588eb2144f85af820edd50b3d629adf05d3823d7554974441
@@ -66,7 +85,4 @@ RUN set -eu; cache() { case "$1" in *@sha256:*) ;; *) exit 1;; esac; \
     cache "${ACORE_WORLD_IMAGE}" worldserver.tar acore/ac-wotlk-worldserver:pinned
 COPY docker/compose.yaml /opt/server/compose.yaml
 COPY --chmod=755 docker/runner.py /usr/local/bin/runner.py
-RUN echo 'export PATH="/usr/local/go/bin:/opt/venv/bin:$HOME/go/bin:$PATH"' > /etc/profile.d/agent-wow-path.sh
-WORKDIR /workspace
-VOLUME ["/var/lib/docker"]
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/runner.py"]

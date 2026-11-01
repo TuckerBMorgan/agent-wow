@@ -41,6 +41,28 @@ resource "aws_security_group" "batch_runner" {
   name   = "agent-wow-batch-runner"
   vpc_id = aws_vpc.benchmark.id
 
+  dynamic "ingress" {
+    for_each = toset([3724, 8085])
+    content {
+      from_port       = ingress.value
+      to_port         = ingress.value
+      protocol        = "tcp"
+      security_groups = [aws_security_group.client.id]
+    }
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "client" {
+  name   = "agent-wow-client"
+  vpc_id = aws_vpc.benchmark.id
+
   egress {
     from_port   = 0
     to_port     = 0

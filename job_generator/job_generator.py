@@ -56,6 +56,7 @@ def create_job_definitions(config: dict[str, Any], table_name: str, output_dir: 
             "prompt": evaluation["prompt_template"].replace("[race/class]", character),
             "harness": run["harness"], "model": run["model"], "effort": run["effort"],
             "image_digest": config["runner_image_digest"],
+            "client_image_digest": config["client_image_digest"],
             "timeout_seconds": config["timeout_seconds"],
         }
         case_id, job_id = _digest(spec), str(uuid.uuid4())

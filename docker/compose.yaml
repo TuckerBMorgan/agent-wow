@@ -24,7 +24,7 @@ services:
   authserver:
     image: acore/ac-wotlk-authserver:pinned
     environment: *game-env
-    ports: ["127.0.0.1:3724:3724"]
+    ports: ["${SERVER_BIND_ADDRESS:-127.0.0.1}:3724:3724"]
     volumes: ["configuration:/azerothcore/env/dist/etc"]
     healthcheck:
       <<: *health
@@ -35,7 +35,7 @@ services:
     environment: *game-env
     stdin_open: true
     tty: true
-    ports: ["127.0.0.1:8085:8085"]
+    ports: ["${SERVER_BIND_ADDRESS:-127.0.0.1}:8085:8085"]
     volumes: ["configuration:/azerothcore/env/dist/etc", "client-data:/azerothcore/env/dist/data:ro"]
     healthcheck:
       <<: *health

@@ -25,6 +25,7 @@ bash "$script_dir/publish_runner.sh"
     read -r published_region
     read -r runner_repository
     read -r runner_tag
+    read -r client_tag
 } < "$repo_root/tmp/runner-image.txt"
 runner_registry="${runner_repository%%/*}"
 runner_digest=$(aws ecr describe-images \
@@ -33,21 +34,29 @@ runner_digest=$(aws ecr describe-images \
     --repository-name "${runner_repository##*/}" \
     --image-ids "imageTag=$runner_tag" \
     --query 'imageDetails[0].imageDigest' --output text)
+client_digest=$(aws ecr describe-images \
+    --region "$published_region" \
+    --registry-id "${runner_registry%%.*}" \
+    --repository-name "${runner_repository##*/}" \
+    --image-ids "imageTag=$client_tag" \
+    --query 'imageDetails[0].imageDigest' --output text)
 
-uv run python - "$runner_digest" <<'PY'
+uv run python - "$runner_digest" "$client_digest" <<'PY'
 import json
 from pathlib import Path
 import re
 import sys
 
-digest = sys.argv[1]
-if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+digest, client_digest = sys.argv[1:]
+if not all(re.fullmatch(r"sha256:[0-9a-f]{64}", value) for value in (digest, client_digest)):
     raise SystemExit("ECR did not return a valid image digest")
 path = Path("benchmark.json")
 config = json.loads(path.read_text())
 config["runner_image_digest"] = digest
+config["client_image_digest"] = client_digest
 path.write_text(json.dumps(config, indent=2) + "\n")
 print(f"Updated runner image digest: {digest}")
+print(f"Updated client image digest: {client_digest}")
 PY
 
 tofu apply -auto-approve

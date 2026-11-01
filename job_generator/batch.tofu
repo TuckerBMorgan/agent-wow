@@ -1,5 +1,39 @@
 locals {
   runner_image_digest = jsondecode(file("${path.module}/benchmark.json")).runner_image_digest
+  client_image_digest = jsondecode(file("${path.module}/benchmark.json")).client_image_digest
+}
+
+resource "aws_launch_template" "client" {
+  name_prefix                          = "agent-wow-client-"
+  image_id                             = "ami-09f02015912e773f7"
+  instance_type                        = "m6i.xlarge"
+  instance_initiated_shutdown_behavior = "terminate"
+
+  iam_instance_profile {
+    name = aws_iam_instance_profile.client.name
+  }
+
+  network_interfaces {
+    device_index                = 0
+    associate_public_ip_address = true
+    subnet_id                   = aws_subnet.batch.id
+    security_groups             = [aws_security_group.client.id]
+  }
+
+  metadata_options {
+    http_tokens                 = "required"
+    http_put_response_hop_limit = 2
+  }
+
+  block_device_mappings {
+    device_name = "/dev/xvda"
+    ebs {
+      delete_on_termination = true
+      encrypted             = true
+      volume_size           = 80
+      volume_type           = "gp3"
+    }
+  }
 }
 
 resource "aws_launch_template" "batch" {
@@ -65,7 +99,12 @@ resource "aws_batch_job_definition" "runner" {
     executionRoleArn = aws_iam_role.runner_execution.arn
     environment = [
       { name = "ARTIFACTS_BUCKET", value = aws_s3_bucket.artifacts.id },
-      { name = "JOBS_TABLE", value = aws_dynamodb_table.jobs.name }
+      { name = "JOBS_TABLE", value = aws_dynamodb_table.jobs.name },
+      { name = "CLIENT_REPOSITORY", value = aws_ecr_repository.runner.repository_url },
+      { name = "CLIENT_IMAGE_DIGEST", value = local.client_image_digest },
+      { name = "CLIENT_LAUNCH_TEMPLATE_ID", value = aws_launch_template.client.id },
+      { name = "CLIENT_LAUNCH_TEMPLATE_VERSION", value = tostring(aws_launch_template.client.latest_version) },
+      { name = "CLIENT_ROLE_ID", value = aws_iam_role.client.unique_id }
     ]
     resourceRequirements = [
       { type = "VCPU", value = "8" },
