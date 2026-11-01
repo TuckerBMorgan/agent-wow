@@ -6,6 +6,7 @@ import os
 import shutil
 import signal
 import subprocess
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -108,11 +109,35 @@ def stop_agent():
             pass
 
 
-def run_agent(params, command, env):
+def upload_log(s3, bucket, prefix, name):
+    path = LOGS / name
+    if path.is_file():
+        path.resolve().relative_to(WORKSPACE.resolve())
+        s3.put_object(Bucket=bucket, Key=prefix + name, Body=path.read_bytes(),
+            ServerSideEncryption="AES256", ContentType="text/plain; charset=utf-8")
+
+
+def stream_agent_log(s3, bucket, prefix, stopped):
+    uploaded = None
+    while not stopped.wait(15):
+        try:
+            info = (LOGS / "agent.log").stat()
+            version = (info.st_size, info.st_mtime_ns)
+            if version != uploaded:
+                upload_log(s3, bucket, prefix, "agent.log")
+                uploaded = version
+        except Exception as error:
+            print(f"Live log upload failed: {type(error).__name__}", flush=True)
+
+
+def run_agent(params, command, env, s3, bucket, prefix):
     with (LOGS / "agent.log").open("w") as log:
         agent = subprocess.Popen(command, cwd=WORKSPACE, env=env, stdin=subprocess.PIPE, stdout=log,
             stderr=subprocess.STDOUT, text=True, start_new_session=True)
         STATE["agent"] = agent
+        stopped = threading.Event()
+        uploader = threading.Thread(target=stream_agent_log, args=(s3, bucket, prefix, stopped), daemon=True)
+        uploader.start()
         try:
             agent.communicate(params["prompt"], timeout=int(params["timeout_seconds"]))
             return agent.returncode, False
@@ -122,6 +147,8 @@ def run_agent(params, command, env):
         finally:
             stop_agent()
             STATE["agent"] = None
+            stopped.set()
+            uploader.join()
 
 
 def stop(_signum, _frame):
@@ -162,7 +189,7 @@ def main():
         s3.put_object(Bucket=bucket, Key=prefix + "ready.json", ServerSideEncryption="AES256",
                       Body=json.dumps({"job_id": params["job_id"]}).encode())
         phase = "run_agent"
-        report["agent_exit_code"], report["agent_timed_out"] = run_agent(params, command, env)
+        report["agent_exit_code"], report["agent_timed_out"] = run_agent(params, command, env, s3, bucket, prefix)
     except (Exception, KeyboardInterrupt) as error:
         report["runner_error"] = f"client_{phase}_failed"
         print(f"Client failed during {phase}: {type(error).__name__}", flush=True)
@@ -170,12 +197,7 @@ def main():
         stop_agent()
     try:
         for name in ("agent.log", "final-report.txt", "client-dockerd.log"):
-            path = LOGS / name
-            if path.is_file():
-                path.resolve().relative_to(WORKSPACE.resolve())
-                with path.open("rb") as body:
-                    s3.put_object(Bucket=bucket, Key=prefix + name, Body=body,
-                        ServerSideEncryption="AES256", ContentType="text/plain; charset=utf-8")
+            upload_log(s3, bucket, prefix, name)
     except Exception as error:
         report["runner_error"] = report["runner_error"] or "client_log_upload_failed"
         print(f"Client log upload failed: {type(error).__name__}", flush=True)

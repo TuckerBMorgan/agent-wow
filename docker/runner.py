@@ -242,12 +242,15 @@ def run_client(params, credential, player, viewer_uri, report):
     STATE["client"] = instance
     print(f"Client instance: {instance}", flush=True)
     prefix = f'clients/{os.environ["CLIENT_ROLE_ID"]}:{instance}/'
+    client_log_uri = f"s3://{BUCKET}/{prefix}agent.log"
     report.update(client_instance_id=instance, client_image_digest=digest, server_private_ip=host,
-                  client_ami_id=launched["ImageId"], client_private_ip=launched["PrivateIpAddress"])
+                  client_ami_id=launched["ImageId"], client_private_ip=launched["PrivateIpAddress"],
+                  client_log_s3_uri=client_log_uri)
     TABLE.update_item(Key={"pk": f'JOB#{params["job_id"]}'},
-        UpdateExpression="SET client_instance_id=:client, client_image_digest=:image, server_private_ip=:host, client_private_ip=:ip, client_ami_id=:ami",
+        UpdateExpression="SET client_instance_id=:client, client_image_digest=:image, server_private_ip=:host, client_private_ip=:ip, client_ami_id=:ami, client_log_s3_uri=:log",
         ExpressionAttributeValues={":client": instance, ":image": digest, ":host": host,
-                                   ":ip": launched["PrivateIpAddress"], ":ami": launched["ImageId"]})
+                                   ":ip": launched["PrivateIpAddress"], ":ami": launched["ImageId"],
+                                   ":log": client_log_uri})
     ready, deadline = False, time.monotonic() + 1800
     while True:
         readiness = client_data(prefix, "ready.json") if not ready else None

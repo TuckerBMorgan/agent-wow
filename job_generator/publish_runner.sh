@@ -23,13 +23,13 @@ RUNNER_COMMIT="$(git rev-parse HEAD)"
 aws ecr get-login-password --region "$AWS_REGION" |
   docker login --username AWS --password-stdin "$RUNNER_REGISTRY"
 
-# Build both roles from the local source tree, including uncommitted client changes.
-for target in server client; do
+# Build the server and client images with their respective Dockerfiles.
+for role in server client; do
   tag="$RUNNER_TAG"
-  if [[ "$target" == client ]]; then tag="$CLIENT_TAG"; fi
+  if [[ "$role" == client ]]; then tag="$CLIENT_TAG"; fi
   docker buildx build \
     --platform linux/amd64 \
-    --target "$target" \
+    --file "$repo_root/Dockerfile.$role" \
     --label "org.opencontainers.image.revision=$RUNNER_COMMIT" \
     --tag "$RUNNER_REPOSITORY:$tag" \
     --progress plain \

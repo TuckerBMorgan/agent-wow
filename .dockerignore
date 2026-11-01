@@ -1,5 +1,6 @@
 **
-!Dockerfile
+!Dockerfile.client
+!Dockerfile.server
 !docker/
 !docker/**
 !go.mod
