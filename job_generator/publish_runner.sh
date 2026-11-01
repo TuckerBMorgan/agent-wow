@@ -2,9 +2,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ $# -gt 1 ]]; then
+  echo "Usage: publish_runner.sh [COMMIT]" >&2
+  exit 1
+fi
+
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
 cd "$repo_root"
+
+RUNNER_COMMIT=$(git rev-parse --verify "${1:-HEAD}^{commit}")
+build_dir=$(mktemp -d "${TMPDIR:-/tmp}/agent-wow-build.XXXXXX")
+trap 'rm -rf "$build_dir"' EXIT
+git clone --quiet --no-checkout --no-hardlinks "$repo_root" "$build_dir/source"
+git -C "$build_dir/source" checkout --quiet --detach "$RUNNER_COMMIT"
+printf 'Building runtime images from commit %s\n' "$RUNNER_COMMIT"
 
 # Setup and run the tofu files
 export AWS_REGION="${AWS_REGION:-${AWS_DEFAULT_REGION:-us-west-2}}"
@@ -17,24 +29,23 @@ RUNNER_REPOSITORY="$(tofu -chdir="$script_dir" output -raw runner_repository_url
 RUNNER_REGISTRY="${RUNNER_REPOSITORY%%/*}"
 RUNNER_TAG="benchmark-v3-server-$(date -u +%Y%m%dT%H%M%SZ)"
 CLIENT_TAG="${RUNNER_TAG/server/client}"
-RUNNER_COMMIT="$(git rev-parse HEAD)"
 
 # log into aws
 aws ecr get-login-password --region "$AWS_REGION" |
   docker login --username AWS --password-stdin "$RUNNER_REGISTRY"
 
-# Build the server and client images with their respective Dockerfiles.
+# Both Dockerfiles and their source come from the same committed checkout.
 for role in server client; do
   tag="$RUNNER_TAG"
   if [[ "$role" == client ]]; then tag="$CLIENT_TAG"; fi
   docker buildx build \
     --platform linux/amd64 \
-    --file "$repo_root/Dockerfile.$role" \
+    --file "$build_dir/source/Dockerfile.$role" \
     --label "org.opencontainers.image.revision=$RUNNER_COMMIT" \
     --tag "$RUNNER_REPOSITORY:$tag" \
     --progress plain \
     --push \
-    .
+    "$build_dir/source"
 done
 
 mkdir -p "$repo_root/tmp"

@@ -19,7 +19,7 @@ if ! jq -e '.auth_mode == "chatgpt" and
     exit 1
 fi
 
-bash "$script_dir/publish_runner.sh"
+bash "$script_dir/publish_runner.sh" "$@"
 
 {
     read -r published_region
