@@ -59,7 +59,7 @@ resource "aws_batch_compute_environment" "runner" {
     allocation_strategy = "BEST_FIT_PROGRESSIVE"
     instance_role       = aws_iam_instance_profile.batch_instance.arn
     instance_type       = ["m6i.2xlarge"]
-    max_vcpus           = 8
+    max_vcpus           = 128
     security_group_ids  = [aws_security_group.batch_runner.id]
     subnets             = [aws_subnet.batch.id]
     type                = "EC2"

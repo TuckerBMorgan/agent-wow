@@ -50,9 +50,11 @@ LABEL org.opencontainers.image.azerothcore.revision="${AZEROTHCORE_REF}"
 RUN apt-get update && apt-get install -y --no-install-recommends ripgrep build-essential protobuf-compiler \
     && rm -rf /var/lib/apt/lists/* && useradd --create-home --uid 1000 --shell /bin/bash node
 COPY --from=node /usr/local/ /usr/local/
-RUN npm install --global "@openai/codex@${CODEX_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_VERSION}" \
+ARG GROK_VERSION=1.0.70
+RUN npm install --global --allow-scripts=@xai-official/grok "@openai/codex@${CODEX_VERSION}" "@anthropic-ai/claude-code@${CLAUDE_VERSION}" "@xai-official/grok@${GROK_VERSION}" \
+    && grok --version \
     && npm cache clean --force \
-    && install -d -m 0700 -o node -g node /home/node/{.codex,.claude,.cache,go}
+    && install -d -m 0700 -o node -g node /home/node/{.codex,.claude,.grok,.cache,go}
 COPY --from=agent-wow-builder /usr/local/go /usr/local/go
 COPY --from=agent-wow-builder /out/protoc-gen-go /out/protoc-gen-go-grpc /usr/local/bin/
 COPY --from=agent-wow-builder /src /opt/agent-wow

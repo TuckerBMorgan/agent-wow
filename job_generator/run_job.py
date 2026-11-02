@@ -59,8 +59,8 @@ def submit(spec, definition, queue, credential, table, batch, secrets):
 def main():
     parser = argparse.ArgumentParser(description="Submit a benchmark directly to AWS Batch.")
     parser.add_argument("--all", action="store_true", help="Submit the full matching matrix for this harness.")
-    parser.add_argument("--harness", choices=("codex", "claude"), default="codex")
-    parser.add_argument("--credential-file", type=Path, help="Codex auth JSON or a private Claude OAuth token file.")
+    parser.add_argument("--harness", choices=("codex", "claude", "grok"), default="codex")
+    parser.add_argument("--credential-file", type=Path, help="Codex/Grok subscription auth JSON or a private Claude OAuth token file.")
     parser.add_argument("--race")
     parser.add_argument("--class", dest="character_class")
     parser.add_argument("--evaluation")
@@ -84,7 +84,7 @@ def main():
     if path is None:
         if args.harness == "claude":
             parser.error("Claude requires --credential-file containing its OAuth token")
-        path = Path.home() / ".codex/auth.json"
+        path = Path.home() / (".grok/auth.json" if args.harness == "grok" else ".codex/auth.json")
     credential = path.expanduser().read_text().strip()
     if not credential or len(credential.encode()) > 65536:
         parser.error("The credential file must contain between 1 and 65536 bytes")
@@ -93,6 +93,12 @@ def main():
         if auth.get("auth_mode") != "chatgpt" or not all(auth.get("tokens", {}).get(key)
                 for key in ("access_token", "refresh_token", "id_token")):
             parser.error("Codex requires a ChatGPT subscription login")
+    elif args.harness == "grok":
+        auth = json.loads(credential)
+        if not isinstance(auth, dict) or not any(isinstance(entry, dict) and
+                entry.get("auth_mode") == "oidc" and entry.get("key") and entry.get("refresh_token")
+                for entry in auth.values()):
+            parser.error("Grok requires a subscription login from grok login")
     elif credential.startswith("{"):
         parser.error("Claude requires a raw OAuth token, not Codex auth JSON")
 

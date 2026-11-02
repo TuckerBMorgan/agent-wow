@@ -27,9 +27,9 @@ def write_json(path, value):
 
 def agent_env(server_host):
     env = {key: value for key, value in os.environ.items()
-           if not key.startswith("AWS_") and key not in {
+           if not key.startswith(("AWS_", "GROK_")) and key not in {
                "JOB_INPUT_URL", "ARTIFACTS_BUCKET", "OPENAI_API_KEY", "CODEX_API_KEY",
-               "OPENAI_BASE_URL", "CODEX_AUTH_JSON", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"}}
+               "OPENAI_BASE_URL", "CODEX_AUTH_JSON", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "XAI_API_KEY"}}
     return env | {"HOME": "/home/node", "TMPDIR": str(WORKSPACE / "tmp"),
                   "DOCKER_HOST": "unix:///var/run/docker.sock", "DOCKER_CONTEXT": "default",
                   "AGENT_WOW_AUTHSERVER_HOST": server_host, "AGENT_WOW_AUTHSERVER_PORT": "3724",
@@ -74,6 +74,21 @@ def harness(params, credential, server_host):
         env |= {"CLAUDE_CODE_OAUTH_TOKEN": credential, "DISABLE_AUTOUPDATER": "1"}
         command = ["claude", "-p", "--model", params["model"], "--effort", params["effort"],
                    "--dangerously-skip-permissions", "--output-format", "stream-json", "--verbose"]
+    elif params["harness"] == "grok":
+        auth = json.loads(credential)
+        if not isinstance(auth, dict) or not any(isinstance(entry, dict) and
+                entry.get("auth_mode") == "oidc" and entry.get("key") and entry.get("refresh_token")
+                for entry in auth.values()):
+            raise ValueError("invalid Grok subscription login")
+        home = Path(env["HOME"]) / ".grok"
+        home.mkdir(parents=True, mode=0o700, exist_ok=True)
+        write_json(home / "auth.json", auth)
+        env |= {"GROK_HOME": str(home), "GROK_DISABLE_AUTOUPDATER": "1"}
+        prompt = WORKSPACE / "tmp/agent-prompt.txt"
+        prompt.write_text(params["prompt"])
+        command = ["grok", "--prompt-file", str(prompt), "--model", params["model"],
+                   "--effort", params["effort"], "--always-approve", "--output-format", "streaming-json",
+                   "--cwd", str(WORKSPACE)]
     elif params["harness"] == "codex":
         auth = json.loads(credential)
         tokens = auth.get("tokens", {})
@@ -132,6 +147,16 @@ def stream_agent_log(s3, bucket, prefix, stopped):
 
 
 def record_output(stream, log, transcript, messages):
+    grok_text, grok_tool_output = [], {}
+
+    def flush_grok_text():
+        text = "".join(grok_text)
+        grok_text.clear()
+        if text:
+            messages.write(f"Assistant:\n{text}\n\n")
+            log.write("\n")
+        return text
+
     try:
         for line in stream:
             try:
@@ -141,6 +166,31 @@ def record_output(stream, log, transcript, messages):
             if not isinstance(event, dict):
                 event = {"type": "harness_output", "text": line.rstrip("\n")}
             transcript.write(json.dumps(event) + "\n")
+            if event.get("type") == "text" and isinstance(event.get("data"), str):
+                grok_text.append(event["data"])
+                log.write(event["data"])
+                continue
+            if event.get("type") == "tool_call":
+                flush_grok_text()
+                tool_input = event.get("rawInput")
+                command = tool_input.get("command") if isinstance(tool_input, dict) else None
+                if isinstance(command, str):
+                    log.write(f"$ {command}\n")
+                    continue
+            if event.get("type") == "tool_call_update":
+                output = event.get("rawOutput")
+                if isinstance(output, dict) and isinstance(output.get("output"), str):
+                    current = output["output"]
+                    previous = grok_tool_output.get(event.get("toolCallId"), "")
+                    delta = current[len(previous):] if current.startswith(previous) else current
+                    if delta:
+                        log.write(delta.rstrip("\n") + "\n")
+                    grok_tool_output[event.get("toolCallId")] = current
+                    continue
+            if event.get("type") == "end":
+                final_text = flush_grok_text()
+                if final_text:
+                    (LOGS / "final-report.txt").write_text(final_text.rstrip("\n") + "\n")
             item = event.get("item", {})
             if not isinstance(item, dict):
                 item = {}
@@ -181,7 +231,8 @@ def run_agent(params, command, env, s3, bucket, prefix):
         uploader.start()
         try:
             try:
-                agent.stdin.write(params["prompt"])
+                if params["harness"] != "grok":
+                    agent.stdin.write(params["prompt"])
                 agent.stdin.close()
             except BrokenPipeError:
                 pass
@@ -204,7 +255,7 @@ def run_agent(params, command, env, s3, bucket, prefix):
 
 def upload_artifacts(s3, bucket, prefix):
     archive = Path("/run/agent-wow-client-artifacts.tar.gz")
-    excluded = {"config", "config.yaml", "auth.json", "data", "tmp", ".git", ".codex", ".claude",
+    excluded = {"config", "config.yaml", "auth.json", "data", "tmp", ".git", ".codex", ".claude", ".grok",
                 ".cache", "node_modules", "__pycache__", ".venv", "venv"}
 
     def keep(info):

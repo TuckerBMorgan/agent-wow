@@ -10,7 +10,7 @@
       "prompt_template": "create a [race/class] and adventure until they are level 10"
     }
   ],
-  "runner_image_digest": "sha256:9851f63ff0e38976a77dda0805510454bc1851f798fabe50c5e3785b27ef56bf",
+  "runner_image_digest": "sha256:aeb41c4b9d4dd2918e5f87c1c360df20b7b93d16f922828c2e09d986ab299a72",
   "timeout_seconds": 21600,
   "trial_ids": [
     "1",
@@ -101,7 +101,12 @@
       "harness": "claude",
       "model": "claude-opus-5-5",
       "effort": "medium"
+    },
+    {
+      "harness": "grok",
+      "model": "grok-4.7",
+      "effort": "medium"
     }
   ],
-  "client_image_digest": "sha256:e2be3385a22bf9f214a282f180310ff881f894d6f5c8574b991e1bb950f2035c"
+  "client_image_digest": "sha256:bb7232b6d4b797d2d536adf6de5cb056f1543e431219e573896d56653b289e78"
 }
