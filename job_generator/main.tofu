@@ -1,7 +1,6 @@
 terraform {
   required_providers {
-    aws     = { source = "hashicorp/aws" }
-    archive = { source = "hashicorp/archive" }
+    aws = { source = "hashicorp/aws" }
   }
 }
 variable "table_name" { default = "agent-wow-jobs" }

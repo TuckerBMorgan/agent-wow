@@ -6,6 +6,7 @@ import os
 import shutil
 import signal
 import subprocess
+import tarfile
 import threading
 import time
 import urllib.request
@@ -16,7 +17,7 @@ from botocore.config import Config
 
 WORKSPACE = Path("/workspace")
 LOGS = WORKSPACE / "logs"
-STATE = {"agent": None, "dockerd": None, "docker_log": None}
+STATE = {"agent": None, "dockerd": None, "docker_log": None, "transcript_error": None}
 
 
 def write_json(path, value):
@@ -89,7 +90,7 @@ def harness(params, credential, server_host):
             'forced_login_method="chatgpt"', "--model", params["model"], "--config",
             f'model_reasoning_effort="{params["effort"]}"', "--ask-for-approval", "never", "exec",
             "--sandbox", "danger-full-access", "--cd", str(WORKSPACE), "--skip-git-repo-check",
-            "--color", "never", "--output-last-message", str(LOGS / "final-report.txt"), "-"]
+            "--color", "never", "--json", "--output-last-message", str(LOGS / "final-report.txt"), "-"]
     else:
         raise ValueError("unsupported agent harness")
     subprocess.run(["chown", "-R", "node:node", str(WORKSPACE), "/home/node"], check=True)
@@ -130,25 +131,95 @@ def stream_agent_log(s3, bucket, prefix, stopped):
             print(f"Live log upload failed: {type(error).__name__}", flush=True)
 
 
+def record_output(stream, log, transcript, messages):
+    try:
+        for line in stream:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                event = {"type": "harness_output", "text": line.rstrip("\n")}
+            if not isinstance(event, dict):
+                event = {"type": "harness_output", "text": line.rstrip("\n")}
+            transcript.write(json.dumps(event) + "\n")
+            item = event.get("item", {})
+            if not isinstance(item, dict):
+                item = {}
+            text = item.get("text") or item.get("aggregated_output")
+            if item.get("command"):
+                text = f'$ {item["command"]}\n{text or ""}'
+            if not isinstance(text, str):
+                text = line
+            log.write((text or line).rstrip("\n") + "\n")
+            if event.get("type") == "item.completed" and item.get("type") == "agent_message":
+                messages.write(f'Assistant:\n{item["text"]}\n\n')
+            elif event.get("type") == "assistant":
+                message = event.get("message", {})
+                for block in (message.get("content") or []) if isinstance(message, dict) else []:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        messages.write(f'Assistant:\n{block["text"]}\n\n')
+    except Exception as error:
+        STATE["transcript_error"] = type(error).__name__
+        print(f"Transcript capture failed: {type(error).__name__}", flush=True)
+    finally:
+        stream.close()
+
+
 def run_agent(params, command, env, s3, bucket, prefix):
-    with (LOGS / "agent.log").open("w") as log:
-        agent = subprocess.Popen(command, cwd=WORKSPACE, env=env, stdin=subprocess.PIPE, stdout=log,
-            stderr=subprocess.STDOUT, text=True, start_new_session=True)
+    with (LOGS / "agent.log").open("w", buffering=1) as log, \
+            (LOGS / "transcript.jsonl").open("w", buffering=1) as transcript, \
+            (LOGS / "messages.txt").open("w", buffering=1) as messages:
+        transcript.write(json.dumps({"type": "input", "role": "user", "text": params["prompt"]}) + "\n")
+        messages.write(f'User:\n{params["prompt"]}\n\n')
+        agent = subprocess.Popen(command, cwd=WORKSPACE, env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=log, text=True, encoding="utf-8", errors="replace", start_new_session=True)
         STATE["agent"] = agent
+        STATE["transcript_error"] = None
+        reader = threading.Thread(target=record_output, args=(agent.stdout, log, transcript, messages), daemon=True)
+        reader.start()
         stopped = threading.Event()
         uploader = threading.Thread(target=stream_agent_log, args=(s3, bucket, prefix, stopped), daemon=True)
         uploader.start()
         try:
-            agent.communicate(params["prompt"], timeout=int(params["timeout_seconds"]))
+            try:
+                agent.stdin.write(params["prompt"])
+                agent.stdin.close()
+            except BrokenPipeError:
+                pass
+            agent.wait(timeout=int(params["timeout_seconds"]))
             return agent.returncode, False
         except subprocess.TimeoutExpired:
             stop_agent()
             return 124, True
         finally:
             stop_agent()
+            reader.join(timeout=10)
+            if reader.is_alive():
+                STATE["transcript_error"] = "output_stream_still_open"
             STATE["agent"] = None
             stopped.set()
             uploader.join()
+            if STATE["transcript_error"]:
+                raise RuntimeError("agent transcript capture failed")
+
+
+def upload_artifacts(s3, bucket, prefix):
+    archive = Path("/run/agent-wow-client-artifacts.tar.gz")
+    excluded = {"config", "config.yaml", "auth.json", "data", "tmp", ".git", ".codex", ".claude",
+                ".cache", "node_modules", "__pycache__", ".venv", "venv"}
+
+    def keep(info):
+        parts = Path(info.name).parts
+        if any(part in excluded or part == ".env" or part.startswith(".env.") for part in parts):
+            return None
+        return info if info.isfile() or info.isdir() else None
+
+    with tarfile.open(archive, "w:gz", dereference=False) as bundle:
+        for path in WORKSPACE.iterdir():
+            bundle.add(path, arcname=path.name, filter=keep)
+    archive.chmod(0o600)
+    with archive.open("rb") as body:
+        s3.put_object(Bucket=bucket, Key=prefix + "client-artifacts.tar.gz", Body=body,
+            ServerSideEncryption="AES256", ContentType="application/gzip")
 
 
 def stop(_signum, _frame):
@@ -196,11 +267,12 @@ def main():
     finally:
         stop_agent()
     try:
-        for name in ("agent.log", "final-report.txt", "client-dockerd.log"):
+        for name in ("agent.log", "final-report.txt", "client-dockerd.log", "transcript.jsonl", "messages.txt"):
             upload_log(s3, bucket, prefix, name)
+        upload_artifacts(s3, bucket, prefix)
     except Exception as error:
-        report["runner_error"] = report["runner_error"] or "client_log_upload_failed"
-        print(f"Client log upload failed: {type(error).__name__}", flush=True)
+        report["runner_error"] = report["runner_error"] or "client_artifact_upload_failed"
+        print(f"Client artifact upload failed: {type(error).__name__}", flush=True)
     try:
         s3.put_object(Bucket=bucket, Key=prefix + "client-result.json", ServerSideEncryption="AES256",
             ContentType="application/json", Body=json.dumps(report | {"job_id": params.get("job_id")}).encode())

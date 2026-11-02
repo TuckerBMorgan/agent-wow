@@ -267,16 +267,20 @@ def run_client(params, credential, player, viewer_uri, report):
                 raise ValueError("client report job_id does not match")
             for name in ("agent_exit_code", "agent_timed_out", "runner_error"):
                 report[name] = result[name]
-            for name in ("agent.log", "final-report.txt", "client-dockerd.log"):
+            for name in ("agent.log", "final-report.txt", "client-dockerd.log", "transcript.jsonl",
+                         "messages.txt", "client-artifacts.tar.gz"):
                 source = prefix + name
                 try:
-                    key = f'runs/{params["job_id"]}/logs/{name}'
+                    destination = name if name == "client-artifacts.tar.gz" else f"logs/{name}"
+                    key = f'runs/{params["job_id"]}/{destination}'
                     S3.copy_object(Bucket=BUCKET, Key=key, CopySource={"Bucket": BUCKET, "Key": source},
                                    ServerSideEncryption="AES256")
                     report["log_artifacts"][name] = f"s3://{BUCKET}/{key}"
                 except ClientError as error:
                     if error.response["Error"]["Code"] not in {"NoSuchKey", "404"}:
                         raise
+                    if name in {"transcript.jsonl", "messages.txt", "client-artifacts.tar.gz"}:
+                        report["runner_error"] = report["runner_error"] or "client_artifacts_missing"
             return
         try:
             state = EC2.describe_instances(InstanceIds=[instance])["Reservations"][0]["Instances"][0]["State"]["Name"]

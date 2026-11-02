@@ -10,7 +10,6 @@
       "prompt_template": "create a [race/class] and adventure until they are level 10"
     }
   ],
-  "claim_url": "https://10c315yz1k.execute-api.us-west-2.amazonaws.com/claim",
   "runner_image_digest": "sha256:9851f63ff0e38976a77dda0805510454bc1851f798fabe50c5e3785b27ef56bf",
   "timeout_seconds": 21600,
   "trial_ids": [

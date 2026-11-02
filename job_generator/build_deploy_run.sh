@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Builds and deploys the runner, then claims one new Codex job.
+# Builds and deploys the runner, then submits one new Codex job.
 # OpenTofu changes are applied automatically.
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 repo_root=$(cd "$script_dir/.." && pwd)
@@ -60,33 +60,4 @@ print(f"Updated client image digest: {client_digest}")
 PY
 
 tofu apply -auto-approve
-claim_url=$(tofu output -raw claim_url)
-table_name=$(tofu output -raw table_name)
-
-participant=$(uv run python - "$claim_url" "$table_name" <<'PY'
-import json
-from pathlib import Path
-import sys
-import uuid
-
-from job_generator import create_job_definitions
-
-path = Path("benchmark.json")
-config = json.loads(path.read_text())
-config["claim_url"] = sys.argv[1]
-path.write_text(json.dumps(config, indent=2) + "\n")
-
-race, classes = next(iter(config["characters"].items()))
-config["characters"] = {race: classes[:1]}
-config["runs"] = [next(run for run in config["runs"] if run["harness"] == "codex")]
-config["evaluations"] = config["evaluations"][:1]
-# A fresh trial also permits another run when the image was reused from cache.
-config["trial_ids"] = [f"cycle-{uuid.uuid4().hex}"]
-output = Path("../tmp/participants").resolve()
-files = create_job_definitions(config, table_name=sys.argv[2], output_dir=str(output))
-print(files[0])
-PY
-)
-
-printf 'Participant file: %s\n' "$participant"
-bash "$script_dir/submit_claim.sh" "$participant"
+uv run python run_job.py

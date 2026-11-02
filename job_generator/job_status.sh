@@ -2,7 +2,7 @@
 set -euo pipefail
 
 if [[ $# -lt 1 || $# -gt 2 || ( $# -eq 2 && "$2" != "--follow" ) ]]; then
-    echo "Usage: job_status.sh JOB_ID [--follow]" >&2
+    echo "Usage: job_status.sh JOB_ID_OR_BATCH_ID [--follow]" >&2
     exit 1
 fi
 
@@ -26,13 +26,21 @@ s3 = boto3.client("s3", config=Config(connect_timeout=5, read_timeout=15, retrie
 
 
 def watch():
+    application_id = job_id
     previous, offset, source = None, 0, None
     while True:
-        job = table.get_item(Key={"pk": f"JOB#{job_id}"}, ConsistentRead=True,
+        job = table.get_item(Key={"pk": f"JOB#{application_id}"}, ConsistentRead=True,
             ProjectionExpression="#status,batch_job_id,client_log_s3_uri,log_artifacts",
             ExpressionAttributeNames={"#status": "status"}).get("Item")
         if not job:
-            raise RuntimeError(f"Job {job_id} was not found")
+            matches = batch.describe_jobs(jobs=[application_id])["jobs"]
+            if matches:
+                resolved = next((item["value"] for item in matches[0]["container"].get("environment", [])
+                                 if item["name"] == "JOB_ID"), None)
+                if resolved and resolved != application_id:
+                    application_id = resolved
+                    continue
+            raise RuntimeError(f"No application job found for {job_id}")
         batch_id = job.get("batch_job_id")
         status = "NOT_SUBMITTED"
         if batch_id:
@@ -67,7 +75,7 @@ def watch():
             except ClientError as error:
                 if error.response["Error"]["Code"] not in {"NoSuchKey", "404"}:
                     raise
-        if status in {"SUCCEEDED", "FAILED"} or job["status"] == "INCOMPLETE":
+        if status in {"SUCCEEDED", "FAILED"} or job["status"] == "FAILED":
             return 0 if status == "SUCCEEDED" else 1
         time.sleep(15)
 
