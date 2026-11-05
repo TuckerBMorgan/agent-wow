@@ -1,0 +1,7 @@
+services:
+  module:
+    image: agent-wow-arena:prototype
+    network_mode: none
+    volumes:
+      - .:/fighter:ro
+      - ../../build.json:/build.json:ro

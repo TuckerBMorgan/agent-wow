@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import socket
 import subprocess
 import time
 
@@ -31,27 +32,26 @@ def read_build(path):
     return build
 
 
-def level_character(world, name):
+def console(world, command, expected):
     # Use the native console, as the existing server runner does.
     connection = world.attach_socket(params={"stdin": True, "stdout": True, "stream": True})
     try:
         sock = connection._sock
         sock.settimeout(5)
-        sock.sendall(f"character level {name} {LEVEL}\n".encode())
-        expected = f"You changed level of {name} to {LEVEL}.".encode()
+        sock.sendall((command + "\n").encode())
         deadline = time.monotonic() + 15
         reply = b""
         while time.monotonic() < deadline:
             try:
                 chunk = sock.recv(16384)
-            except TimeoutError:
+            except (TimeoutError, socket.timeout):
                 continue
             if not chunk:
                 break
             reply = (reply + chunk)[-65536:]
             if expected in reply:
                 return
-        raise ValueError(f"World console did not confirm the level change for {name}")
+        raise ValueError("World console did not confirm the command")
     finally:
         connection.close()
 
@@ -59,7 +59,7 @@ def level_character(world, name):
 def provision(build, name, config_dir, worldserver):
     import docker
 
-    if not re.fullmatch(r"[A-Z][a-z]{1,11}", name):
+    if name is not None and not re.fullmatch(r"[A-Z][a-z]{1,11}", name):
         raise ValueError("Use a character name of 2–12 letters with an initial capital")
     config_dir = config_dir.resolve()
     if not (config_dir / "auth.json").is_file():
@@ -84,7 +84,7 @@ def provision(build, name, config_dir, worldserver):
     def client(*args):
         result = subprocess.run(["agent-wow", *args], env=env, capture_output=True, text=True, timeout=45)
         if result.returncode:
-            raise ValueError(f"agent-wow {' '.join(args[:2])} failed")
+            raise ValueError(f"agent-wow {' '.join(args[:2])} failed: {result.stderr.strip()}")
         return result.stdout
 
     def characters():
@@ -97,12 +97,15 @@ def provision(build, name, config_dir, worldserver):
     client("auth", "login")
     existing = characters()
     if not existing:
-        client("char", "create", "--name", name, "--race", build["race"], "--class", build["class"])
+        name_args = ["--name", name] if name else []
+        client("char", "create", *name_args, "--race", build["race"], "--class", build["class"])
         existing = characters()
+    if name is None and len(existing) == 1:
+        name = existing[0]["name"]
     if len(existing) != 1 or not matches(existing[0]) or existing[0]["level"] not in (1, LEVEL):
         raise ValueError("Expected a dedicated account with only the submitted character")
     if existing[0]["level"] == 1:
-        level_character(world, name)
+        console(world, f"character level {name} {LEVEL}", f"You changed level of {name} to {LEVEL}.".encode())
     created = characters()
     if len(created) != 1 or not matches(created[0]) or created[0]["level"] != LEVEL:
         raise ValueError("Client did not confirm the requested character and level")

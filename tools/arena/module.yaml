@@ -1,0 +1,23 @@
+api_version: 1
+enabled: true
+description: Minimal native duel harness
+compose:
+  file: compose.yaml
+  service: module
+grpc:
+  descriptor_set: module.pb
+rpc:
+  prepare: /agentwow.arena.v1.Arena/Prepare
+  challenge: /agentwow.arena.v1.Arena/Challenge
+  status: /agentwow.arena.v1.Arena/Status
+packets:
+  SMSG_LOGIN_VERIFY_WORLD: /agentwow.arena.v1.Arena/OnPacket
+  SMSG_DUEL_REQUESTED: /agentwow.arena.v1.Arena/OnPacket
+  SMSG_DUEL_COUNTDOWN: /agentwow.arena.v1.Arena/OnPacket
+  SMSG_DUEL_COMPLETE: /agentwow.arena.v1.Arena/OnPacket
+  SMSG_DUEL_WINNER: /agentwow.arena.v1.Arena/OnPacket
+  SMSG_ATTACKERSTATEUPDATE: /agentwow.arena.v1.Arena/OnPacket
+  SMSG_SPELLNONMELEEDAMAGELOG: /agentwow.arena.v1.Arena/OnPacket
+  SMSG_CAST_FAILED: /agentwow.arena.v1.Arena/OnPacket
+lifecycle:
+  before_logout: /agentwow.arena.v1.Arena/Stop
