@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/go-viper/mapstructure/v2"
@@ -21,14 +23,15 @@ type Server struct {
 
 // Config contains the settings shared by client packages.
 type Config struct {
-	ConfigDir     string     `mapstructure:"config_dir"`
-	DataDir       string     `mapstructure:"data_dir"`
-	ModuleDir     string     `mapstructure:"module_dir"`
-	AuthFilePath  string     `mapstructure:"auth_file_path"`
-	RealmFilePath string     `mapstructure:"realm_file_path"`
-	AuthServer    Server     `mapstructure:"authserver"`
-	WorldRPC      Server     `mapstructure:"worldrpc"`
-	LogLevel      slog.Level `mapstructure:"log_level"`
+	ConfigDir          string     `mapstructure:"config_dir"`
+	DataDir            string     `mapstructure:"data_dir"`
+	ModuleDir          string     `mapstructure:"module_dir"`
+	AuthFilePath       string     `mapstructure:"auth_file_path"`
+	RealmFilePath      string     `mapstructure:"realm_file_path"`
+	AuthServer         Server     `mapstructure:"authserver"`
+	WorldServerAddress string     `mapstructure:"worldserver_address"`
+	WorldRPC           Server     `mapstructure:"worldrpc"`
+	LogLevel           slog.Level `mapstructure:"log_level"`
 }
 
 var current Config
@@ -51,6 +54,7 @@ func Init(configFile string) error {
 	v.SetDefault("data_dir", filepath.Join(homeDir, ".local", "share", "agent-wow"))
 	v.SetDefault("authserver.host", "localhost")
 	v.SetDefault("authserver.port", 3724)
+	v.SetDefault("worldserver_address", "")
 	v.SetDefault("worldrpc.host", "localhost")
 	v.SetDefault("worldrpc.port", 8086)
 	v.SetDefault("log_level", "info")
@@ -104,6 +108,16 @@ func Init(configFile string) error {
 	}
 	if err := validateServer("worldrpc", cfg.WorldRPC); err != nil {
 		return err
+	}
+	if cfg.WorldServerAddress != "" {
+		host, port, err := net.SplitHostPort(cfg.WorldServerAddress)
+		if err != nil {
+			return fmt.Errorf("worldserver_address must be host:port: %w", err)
+		}
+		number, err := strconv.Atoi(port)
+		if err != nil || strings.TrimSpace(host) == "" || number < 1 || number > 65535 {
+			return errors.New("worldserver_address must have a host and a port between 1 and 65535")
+		}
 	}
 	current = cfg
 	return nil

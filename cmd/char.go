@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agent-wow/agent-wow/internal/config"
 	"github.com/agent-wow/agent-wow/pkg/auth"
 	"github.com/agent-wow/agent-wow/pkg/char"
 	"github.com/agent-wow/agent-wow/pkg/world"
@@ -77,6 +78,9 @@ func characterTarget(ctx context.Context) (auth.Realm, *auth.Session, error) {
 		}
 		if !realm.Selectable() {
 			return auth.Realm{}, nil, fmt.Errorf("selected realm %q is %s", realm.Name, realm.Status())
+		}
+		if address := config.Get().WorldServerAddress; address != "" {
+			realm.Address = address
 		}
 		return realm, session, nil
 	}

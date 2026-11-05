@@ -1,0 +1,82 @@
+x-game-env: &game-env
+  AC_LOGIN_DATABASE_INFO: "database;3306;root;harbor;acore_auth"
+  AC_WORLD_DATABASE_INFO: "database;3306;root;harbor;acore_world"
+  AC_CHARACTER_DATABASE_INFO: "database;3306;root;harbor;acore_characters"
+  AC_DATA_DIR: /azerothcore/env/dist/data
+x-health: &health
+  interval: 5s
+  timeout: 5s
+  retries: 120
+services:
+  main:
+    image: __AGENT_IMAGE__
+    platform: linux/amd64
+    privileged: true
+    networks: [game]
+    depends_on:
+      worldserver: {condition: service_healthy}
+    # No host Docker socket, ports, directories, or shared game volumes.
+    volumes:
+      - module-images:/var/lib/docker
+  observer:
+    image: __AGENT_IMAGE__
+    platform: linux/amd64
+    entrypoint: [sleep, infinity]
+    networks: [game]
+    depends_on:
+      worldserver: {condition: service_healthy}
+  database:
+    image: docker.io/library/mysql@sha256:a0225d1ea6631c8bc2385dc4c2faba17bbf1834ecf369e1659a9a382bd8d5dd7
+    platform: linux/amd64
+    environment: {MYSQL_ROOT_PASSWORD: harbor}
+    networks: [database]
+    healthcheck:
+      <<: *health
+      test: [CMD-SHELL, 'mysqladmin ping -h 127.0.0.1 -uroot -p"$$MYSQL_ROOT_PASSWORD" --silent']
+  db-import:
+    image: docker.io/acore/ac-wotlk-db-import@sha256:46856838c54cabfff110f532d587085613f4ef03d8515e7dd3870b037c0291b2
+    platform: linux/amd64
+    environment: *game-env
+    networks: [database]
+    volumes: ["configuration:/azerothcore/env/dist/etc"]
+    depends_on:
+      database: {condition: service_healthy}
+  client-data:
+    image: docker.io/acore/ac-wotlk-client-data@sha256:fc880ca1344cc1d588eb2144f85af820edd50b3d629adf05d3823d7554974441
+    platform: linux/amd64
+    volumes: ["client-data:/azerothcore/env/dist/data"]
+  authserver:
+    image: docker.io/acore/ac-wotlk-authserver@sha256:a0a656c9864a7d4c9de2680e3e9cc26b7b27d559a67accc4969faa96345ca64e
+    platform: linux/amd64
+    environment: *game-env
+    networks: [game, database]
+    volumes: ["configuration:/azerothcore/env/dist/etc"]
+    healthcheck:
+      <<: *health
+      test: [CMD, bash, -c, "exec 3<>/dev/tcp/127.0.0.1/3724"]
+    depends_on:
+      db-import: {condition: service_completed_successfully}
+  worldserver:
+    image: docker.io/acore/ac-wotlk-worldserver@sha256:6186b9efbbef9efc7345ae8a067f6045f5462883c4df58a2d5785af7c514a8f4
+    platform: linux/amd64
+    environment: *game-env
+    networks: [game, database]
+    # The fresh trial owns its game account. The command is queued until startup.
+    command: [bash, -c, "{ printf 'account create AGENT HARBORPLAYER\\n'; sleep infinity; } | worldserver"]
+    volumes:
+      - configuration:/azerothcore/env/dist/etc
+      - client-data:/azerothcore/env/dist/data:ro
+    healthcheck:
+      <<: *health
+      retries: 360
+      test: [CMD, bash, -c, "exec 3<>/dev/tcp/127.0.0.1/8085"]
+    depends_on:
+      authserver: {condition: service_healthy}
+      client-data: {condition: service_completed_successfully}
+networks:
+  game: {}
+  database: {internal: true}
+volumes:
+  configuration: {}
+  client-data: {}
+  module-images: {}

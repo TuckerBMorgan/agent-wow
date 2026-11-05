@@ -1,0 +1,10 @@
+# Add alongside job.yaml to compare both agents using Harbor's config merging.
+agents:
+  - name: claude-code
+    model_name: anthropic/claude-opus-5-5
+    env:
+      CLAUDE_FORCE_OAUTH: "1"
+      CLAUDE_CODE_OAUTH_TOKEN: "${CLAUDE_CODE_OAUTH_TOKEN}"
+    kwargs:
+      version: 2.1.306
+      reasoning_effort: medium

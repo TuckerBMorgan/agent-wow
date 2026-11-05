@@ -1,0 +1,17 @@
+jobs_dir: benchmark/jobs
+n_attempts: 3
+n_concurrent_trials: 1
+retry:
+  max_retries: 2
+agents:
+  - name: codex
+    model_name: openai/gpt-6.1-sol
+    env:
+      CODEX_FORCE_AUTH_JSON: "1"
+    kwargs:
+      version: 0.163.0
+      reasoning_effort: medium
+environment:
+  type: docker
+datasets:
+  - path: benchmark/tasks

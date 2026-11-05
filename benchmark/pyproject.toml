@@ -1,0 +1,9 @@
+[project]
+name = "agent-wow-benchmark"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["harbor==0.25.0"]
+
+[project.optional-dependencies]
+# AWS CLI login credentials need botocore's CRT support.
+ec2 = ["harbor[ec2]==0.25.0", "botocore[crt]"]

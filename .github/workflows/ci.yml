@@ -45,3 +45,13 @@ jobs:
 
       - name: Build
         run: ./run build
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Check Harbor tasks and scoring
+        run: |
+          uv run --project benchmark python -m unittest discover -s benchmark -v
+          uv run --project benchmark python benchmark/generate.py
+          # The agent builds gameplay modules with its own nested Docker engine.
+          uv run --project benchmark harbor lint benchmark/tasks/* --ignore compose-privileged

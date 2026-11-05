@@ -1,0 +1,15 @@
+# Run from the repository root after starting the worker in benchmark/aws/stack.yaml.
+# python benchmark/generate.py --image "$(cat benchmark/aws/image.txt)"
+# uv run --project benchmark --extra ec2 harbor run -c benchmark/job.yaml -c benchmark/aws.yaml
+# Attach mode leaves the worker running; stop it with EC2 when finished.
+n_concurrent_trials: 1
+environment:
+  type: ec2
+  kwargs:
+    region: us-west-2
+    launch_mode: attach
+    instance_id: i-049461032b1f49ec3
+    ssh_user: ubuntu
+    ssh_key_path: benchmark/aws/worker.pem
+    bootstrap_docker: false
+    compose_up_timeout_sec: 1800

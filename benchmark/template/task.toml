@@ -1,0 +1,45 @@
+schema_version = "1.4"
+artifacts = [
+  { source = "/evidence/characters.json", service = "observer", destination = "characters.json" },
+  { source = "/workspace/journal", destination = "journal" },
+  { source = "/workspace/scripts", destination = "scripts" },
+  { source = "/workspace/modules", destination = "modules", exclude = [".git", "__pycache__", ".venv", "node_modules"] },
+  { source = "/workspace/logs", destination = "gameplay-logs" },
+]
+
+[task]
+name = "agent-wow/__TASK_NAME__"
+
+[agent]
+timeout_sec = 21600
+user = "node"
+
+[environment]
+docker_image = __AGENT_IMAGE__
+build_timeout_sec = 1800
+cpus = 4
+memory_mb = 4096
+workdir = "/workspace"
+
+[environment.healthcheck]
+command = '''
+runuser -u node -- bash -lc 'docker info >/dev/null && docker buildx version >/dev/null && go version >/dev/null && python3 -c "import grpc, requests, yaml" && agent-wow auth login --timeout 5s >/dev/null'
+'''
+interval_sec = 3
+timeout_sec = 15
+retries = 20
+
+[verifier]
+environment_mode = "separate"
+timeout_sec = 60
+
+[verifier.environment]
+cpus = 1
+memory_mb = 256
+workdir = "/"
+network_mode = "no-network"
+
+[[verifier.collect]]
+service = "observer"
+command = "snapshot-characters"
+timeout_sec = 180

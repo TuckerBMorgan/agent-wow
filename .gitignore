@@ -2,3 +2,9 @@
 /config/
 /data/
 /tmp/
+/benchmark/.venv/
+/benchmark/uv.lock
+/benchmark/tasks/
+/benchmark/jobs/
+/benchmark/aws/*.pem
+__pycache__/
