@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parent
 
 def generate(output, image="agent-wow-harbor:dev", race=None, character_class=None):
     characters = json.loads((ROOT / "characters.json").read_text())
+    starting_areas = json.loads((ROOT / "starting_areas.json").read_text())
     cases = [(r, c) for r, classes in characters.items() for c in classes
              if (race is None or r == race) and (character_class is None or c == character_class)]
     if not cases:
@@ -24,17 +25,18 @@ def generate(output, image="agent-wow-harbor:dev", race=None, character_class=No
     marker.touch()
     tasks = []
     for r, c in cases:
-        level = 10
-        name = f"{r}-{c}-level-{level}"
+        area = starting_areas[r]
+        name = f"{r}-{c}-starting-zone"
         task = Path(output) / name
         shutil.copytree(ROOT / "template", task, dirs_exist_ok=True)
         (task / "instruction.md").write_text((ROOT / "template/instruction.md").read_text().format(
-            race=r.replace("-", " "), character_class=c, level=level))
+            race=r.replace("-", " "), character_class=c, starting_area=area["name"]))
         for relative in ("task.toml", "environment/docker-compose.yaml"):
             path = task / relative
             path.write_text(path.read_text().replace("__TASK_NAME__", name).replace(
                 "__AGENT_IMAGE__", json.dumps(image)))
-        goal = {"race": r, "class": c, "level": level}
+        goal = {"race": r, "class": c, "starting_area": area["name"],
+                "completion_quest_ids": area["completion_quest_ids"]}
         (task / "tests/goal.json").write_text(json.dumps(goal) + "\n")
         tasks.append(task)
     return tasks

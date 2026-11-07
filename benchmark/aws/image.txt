@@ -1,1 +1,1 @@
-143551238491.dkr.ecr.us-west-2.amazonaws.com/agent-wow-harbor@sha256:d07dc7cf88e241e8c9ea6d6c565e6c81d8088b19fcc83b76ed7b312ca994fc49
+143551238491.dkr.ecr.us-west-2.amazonaws.com/agent-wow-harbor@sha256:4e9967aed8bd54aecd270c9a7a4320047fbe00cf9da8a57c91e34cab43fe7996

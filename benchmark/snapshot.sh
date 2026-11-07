@@ -6,7 +6,7 @@ set -euo pipefail
 mkdir -p /evidence
 for attempt in {1..10}; do
     if agent-wow auth login --timeout 10s > /dev/null \
-        && agent-wow char list --json > /evidence/characters.tmp; then
+        && agent-wow char list --json --completed-quests --timeout 60s > /evidence/characters.tmp; then
         mv /evidence/characters.tmp /evidence/characters.json
         exit 0
     fi

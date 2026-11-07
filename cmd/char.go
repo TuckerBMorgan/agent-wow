@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/agent-wow/agent-wow/internal/config"
+	"github.com/agent-wow/agent-wow/internal/questsnapshot"
 	"github.com/agent-wow/agent-wow/pkg/auth"
 	"github.com/agent-wow/agent-wow/pkg/char"
 	"github.com/agent-wow/agent-wow/pkg/world"
@@ -26,14 +27,16 @@ type characterClient interface {
 }
 
 type characterCommands struct {
-	dial       func(context.Context, auth.Realm, *auth.Session) (characterClient, error)
-	play       func(context.Context, auth.Realm, *auth.Session, string, *slog.Logger, world.Options) (playSession, error)
-	isTerminal func(io.Reader) bool
+	dial            func(context.Context, auth.Realm, *auth.Session) (characterClient, error)
+	play            func(context.Context, auth.Realm, *auth.Session, string, *slog.Logger, world.Options) (playSession, error)
+	completedQuests func(context.Context, auth.Realm, *auth.Session, []char.Character, time.Duration) (map[char.GUID][]uint32, error)
+	isTerminal      func(io.Reader) bool
 }
 
 func newCharCommand() *cobra.Command {
 	return characterCommands{
-		play: startCharacterPlay,
+		play:            startCharacterPlay,
+		completedQuests: questsnapshot.Collect,
 		dial: func(ctx context.Context, realm auth.Realm, session *auth.Session) (characterClient, error) {
 			return char.Dial(ctx, realm, session)
 		},

@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"text/tabwriter"
 	"time"
@@ -11,9 +12,15 @@ import (
 )
 
 func (deps characterCommands) listCommand(timeout *time.Duration) *cobra.Command {
-	var jsonOutput bool
+	var jsonOutput, completedQuests bool
 	command := &cobra.Command{Use: "list", Short: "List characters on the selected realm", Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if completedQuests && !jsonOutput {
+				return errors.New("--completed-quests requires --json")
+			}
+			if completedQuests && deps.completedQuests == nil {
+				return errors.New("completed-quest collector is unavailable")
+			}
 			ctx, cancel, err := characterContext(cmd, *timeout)
 			if err != nil {
 				return err
@@ -31,6 +38,19 @@ func (deps characterCommands) listCommand(timeout *time.Duration) *cobra.Command
 			characters, err := client.List(ctx)
 			if err != nil {
 				return err
+			}
+			if completedQuests {
+				// Release selection before opening another connection for the same
+				// account, and give quest collection fresh per-phase budgets.
+				if err := client.Close(); err != nil {
+					return err
+				}
+				cancel()
+				quests, err := deps.completedQuests(cmd.Context(), realm, session, characters, *timeout)
+				if err != nil {
+					return err
+				}
+				return output.WriteCharacterJSONWithQuests(cmd.OutOrStdout(), realm, characters, quests)
 			}
 			if jsonOutput {
 				return output.WriteCharacterJSON(cmd.OutOrStdout(), realm, characters)
@@ -51,5 +71,6 @@ func (deps characterCommands) listCommand(timeout *time.Duration) *cobra.Command
 			return table.Flush()
 		}}
 	command.Flags().BoolVar(&jsonOutput, "json", false, "Output characters and realm identity as JSON")
+	command.Flags().BoolVar(&completedQuests, "completed-quests", false, "Log in each character to include rewarded quest IDs in JSON")
 	return command
 }

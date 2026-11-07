@@ -1,1 +1,1 @@
-Create a {race} {character_class} and complete their starting zone.
+Create a {race} {character_class} and complete {starting_area}.

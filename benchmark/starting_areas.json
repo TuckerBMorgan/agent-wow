@@ -1,0 +1,12 @@
+{
+  "human": {"name": "Northshire Valley", "completion_quest_ids": [54, 6]},
+  "orc": {"name": "Valley of Trials", "completion_quest_ids": [805, 794]},
+  "dwarf": {"name": "Coldridge Valley", "completion_quest_ids": [420, 218]},
+  "night-elf": {"name": "Shadowglen", "completion_quest_ids": [928, 921]},
+  "undead": {"name": "Deathknell", "completion_quest_ids": [383, 382]},
+  "tauren": {"name": "Red Cloud Mesa", "completion_quest_ids": [763, 757]},
+  "gnome": {"name": "Coldridge Valley", "completion_quest_ids": [420, 218]},
+  "troll": {"name": "Valley of Trials", "completion_quest_ids": [805, 794]},
+  "blood-elf": {"name": "Sunstrider Isle", "completion_quest_ids": [8350, 8347]},
+  "draenei": {"name": "Ammen Vale", "completion_quest_ids": [9313, 9312]}
+}
