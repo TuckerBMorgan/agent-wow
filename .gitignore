@@ -5,6 +5,7 @@
 /benchmark/.venv/
 /benchmark/uv.lock
 /benchmark/tasks/
+/benchmark/tasks-level-10/
 /benchmark/jobs/
 /benchmark/aws/*.pem
 __pycache__/

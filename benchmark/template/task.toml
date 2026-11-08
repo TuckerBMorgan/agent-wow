@@ -41,5 +41,5 @@ network_mode = "no-network"
 
 [[verifier.collect]]
 service = "observer"
-command = "snapshot-characters"
+command = __SNAPSHOT_COMMAND__
 timeout_sec = 180

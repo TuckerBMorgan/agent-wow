@@ -71,6 +71,16 @@ class GradingTests(unittest.TestCase):
             with self.subTest(quest_ids=quest_ids), self.assertRaises(ValueError):
                 grade([], self.goal | {"completion_quest_ids": quest_ids})
 
+    def test_level_10_requires_a_matching_character_at_or_above_target(self):
+        goal = {"race": "night-elf", "class": "druid", "level": 10}
+        character = {"race": "Night Elf", "class": "Druid"}
+        self.assertEqual(grade([], goal), 0)
+        self.assertEqual(grade([character | {"level": 9}, character | {"class": "Hunter", "level": 20}], goal), 0)
+        for level in (10, 11):
+            self.assertEqual(grade([character | {"level": level}], goal), 1)
+        with self.assertRaises(ValueError):
+            grade([character | {"level": "10"}], goal)
+
 
 class DatasetTests(unittest.TestCase):
     starting_areas = {
@@ -97,6 +107,7 @@ class DatasetTests(unittest.TestCase):
                     self.assertEqual(task.config.verifier.environment_mode.value, "separate")
                     self.assertIsNone(task.config.verifier.environment.healthcheck)
                     self.assertEqual(task.config.verifier.environment.workdir, "/")
+                    self.assertEqual(task.config.verifier.collect[0].command, "snapshot-characters")
                     snapshot = next(a for a in task.config.artifacts if a.source == "/evidence/characters.json")
                     self.assertEqual(snapshot.service, "observer")
                     goal = json.loads((path / "tests/goal.json").read_text())
@@ -108,6 +119,23 @@ class DatasetTests(unittest.TestCase):
                     race = goal["race"].replace("-", " ")
                     self.assertEqual((path / "instruction.md").read_text(),
                                      f"Create a {race} {goal['class']} and complete {area}.\n")
+
+    def test_level_10_tasks_have_separate_ids_and_collect_only_levels(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tasks = generate(Path(directory) / "level-10", benchmark="level-10")
+            self.assertEqual(len(tasks), 52)
+            for path in tasks:
+                with self.subTest(task=path.name):
+                    goal = json.loads((path / "tests/goal.json").read_text())
+                    race, character_class = goal["race"], goal["class"]
+                    self.assertEqual(goal, {"race": race, "class": character_class, "level": 10})
+                    self.assertEqual(path.name, f"{race}-{character_class}-level-10")
+                    self.assertEqual((path / "instruction.md").read_text(),
+                                     f"create a {race.replace('-', ' ')} {character_class} and adventure until you are level 10\n")
+                    hook, = Task(path).config.verifier.collect
+                    self.assertEqual(hook.service, "observer")
+                    self.assertIn("char list --json", hook.command)
+                    self.assertNotIn("completed-quests", hook.command)
 
     def test_filtered_regeneration_does_not_leave_stale_cases(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -7,6 +7,12 @@ Parameters:
     Type: String
     Description: Controller's public IPv4 address followed by /32.
     AllowedPattern: '(\d{1,3}\.){3}\d{1,3}/32'
+  ViewerWorldRepositoryArn:
+    Type: String
+    Default: ""
+    Description: ECR repository for the existing mod-watch world image. Set to enable spectator sessions.
+Conditions:
+  ViewerEnabled: !Not [!Equals [!Ref ViewerWorldRepositoryArn, ""]]
 Resources:
   Images:
     Type: AWS::ECR::Repository
@@ -24,6 +30,10 @@ Resources:
           - Effect: Allow
             Principal: {Service: ec2.amazonaws.com}
             Action: sts:AssumeRole
+      ManagedPolicyArns: !If
+        - ViewerEnabled
+        - [!Sub 'arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore']
+        - !Ref AWS::NoValue
       Policies:
         - PolicyName: PullWorkerImage
           PolicyDocument:
@@ -34,7 +44,9 @@ Resources:
                 Resource: "*"
               - Effect: Allow
                 Action: [ecr:BatchGetImage, ecr:GetDownloadUrlForLayer, ecr:BatchCheckLayerAvailability]
-                Resource: !GetAtt Images.Arn
+                Resource:
+                  - !GetAtt Images.Arn
+                  - !If [ViewerEnabled, !Ref ViewerWorldRepositoryArn, !Ref 'AWS::NoValue']
   WorkerProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:

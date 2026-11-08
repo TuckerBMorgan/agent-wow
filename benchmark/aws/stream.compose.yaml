@@ -1,0 +1,29 @@
+services:
+  observer:
+    volumes: ["watcher-bootstrap:/viewer-bootstrap"]
+  authserver:
+    ports: ["127.0.0.1:3724:3724"]
+  worldserver:
+    image: ${HARBOR_WATCH_WORLD_IMAGE:?Missing spectator world image}
+    ports: ["127.0.0.1:8085:8085"]
+    environment:
+      WATCHER_PASSWORD: ${HARBOR_WATCHER_PASSWORD:?Missing spectator account password}
+    volumes: ["watcher-bootstrap:/viewer-bootstrap"]
+    command:
+      - bash
+      - -c
+      - |
+        set -o pipefail
+        {
+          printf 'account create AGENT HARBORPLAYER\naccount create WATCHER %s\n' "$$WATCHER_PASSWORD"
+          until [ -f /viewer-bootstrap/watcher/registered ]; do sleep 1; done
+          printf 'account set gmlevel WATCHER 2 -1\n'
+          sleep infinity
+        } | worldserver 2>&1 | while IFS= read -r line; do
+          printf '%s\n' "$$line"
+          case "$$line" in
+            *'security level of account WATCHER to 2.'*) touch /viewer-bootstrap/watcher/rank-set ;;
+          esac
+        done
+volumes:
+  watcher-bootstrap: {}
