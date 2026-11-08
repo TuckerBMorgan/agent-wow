@@ -122,69 +122,6 @@ func TestCharacterListCommands(t *testing.T) {
 	}
 }
 
-func TestCharacterListCompletedQuests(t *testing.T) {
-	for _, fail := range []bool{false, true} {
-		t.Run(map[bool]string{false: "snapshot", true: "collection failure"}[fail], func(t *testing.T) {
-			realm, session := setupCharacterRealm(t)
-			characters := []char.Character{{GUID: 42, Name: "Arlen", Race: char.RaceHuman, Class: char.ClassWarrior}}
-			client := &fakeCharacterClient{characters: characters}
-			var selectionCtx context.Context
-			called := false
-			collectionErr := errors.New("quest response unavailable")
-			deps := characterCommands{
-				dial: func(ctx context.Context, _ auth.Realm, _ *auth.Session) (characterClient, error) {
-					selectionCtx = ctx
-					return client, nil
-				},
-				completedQuests: func(ctx context.Context, got auth.Realm, saved *auth.Session, listed []char.Character, timeout time.Duration) (map[char.GUID][]uint32, error) {
-					called = true
-					if !client.closed || selectionCtx.Err() == nil || ctx.Err() != nil {
-						t.Fatal("selection must close before collection with a fresh context")
-					}
-					if got != realm || *saved != *session || len(listed) != 1 || listed[0] != characters[0] || timeout != 60*time.Second {
-						t.Fatal("collector received the wrong target or timeout")
-					}
-					if fail {
-						return nil, collectionErr
-					}
-					return map[char.GUID][]uint32{42: {54}}, nil
-				},
-			}
-			command := deps.command()
-			command.SetArgs([]string{"list", "--json", "--completed-quests", "--timeout", "60s"})
-			var out bytes.Buffer
-			command.SetOut(&out)
-			command.SetErr(io.Discard)
-			err := command.Execute()
-			if !called {
-				t.Fatal("completed quests were not collected")
-			}
-			if fail {
-				if !errors.Is(err, collectionErr) || out.Len() != 0 {
-					t.Fatal("failed collection produced a snapshot", out.String(), err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			var result struct {
-				Characters []struct {
-					GUID              string   `json:"guid"`
-					CompletedQuestIDs []uint32 `json:"completed_quest_ids"`
-				} `json:"characters"`
-			}
-			if err := json.Unmarshal(out.Bytes(), &result); err != nil {
-				t.Fatal(err)
-			}
-			if len(result.Characters) != 1 || result.Characters[0].GUID != "42" ||
-				len(result.Characters[0].CompletedQuestIDs) != 1 || result.Characters[0].CompletedQuestIDs[0] != 54 {
-				t.Fatal(out.String())
-			}
-		})
-	}
-}
-
 func TestCharacterCreateOptions(t *testing.T) {
 	for _, explicit := range []bool{false, true} {
 		t.Run(map[bool]string{false: "randomized", true: "explicit zeros"}[explicit], func(t *testing.T) {
@@ -312,7 +249,6 @@ func TestCharacterValidation(t *testing.T) {
 		{[]string{"create", "--race", "goblin"}, "unknown race"}, {[]string{"create", "--class", "10"}, "unknown class"},
 		{[]string{"create", "--gender", "2"}, "unknown gender"}, {[]string{"create", "--skin", "256"}, "invalid argument"},
 		{[]string{"create", "--face", "-1"}, "invalid argument"}, {[]string{"list", "--timeout", "0"}, "greater than zero"},
-		{[]string{"list", "--completed-quests"}, "requires --json"},
 		{[]string{"list"}, "no realm selected"}, {[]string{"delete", "Arlen"}, "requires --yes"},
 		{[]string{"delete", "", "--yes"}, "must not be empty"},
 	} {

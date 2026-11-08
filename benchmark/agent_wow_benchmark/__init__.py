@@ -29,8 +29,9 @@ class EC2Environment(HarborEC2Environment):
                 raise ValueError("Streaming requires an active private viewer session directory.")
             self._stream_world_image = stream_world_image
             self._watcher_password = secrets.token_hex(8)
+            self.user_tags = {**self.user_tags, "ViewerEnabled": "true"}
             cloud_config = yaml.safe_load(user_data)
-            cloud_config["runcmd"].append(
+            cloud_config.setdefault("runcmd", []).append(
                 "(snap list amazon-ssm-agent || snap install amazon-ssm-agent --classic) "
                 "&& snap start amazon-ssm-agent"
             )
@@ -51,11 +52,6 @@ class EC2Environment(HarborEC2Environment):
             "HttpTokens": "required",
             "HttpPutResponseHopLimit": 1,
         }
-        if self._stream_dir:
-            instance_tags = next(spec["Tags"] for spec in kwargs["TagSpecifications"]
-                                 if spec["ResourceType"] == "instance")
-            instance_tags[:] = [tag for tag in instance_tags if tag["Key"] != "ViewerEnabled"]
-            instance_tags.append({"Key": "ViewerEnabled", "Value": "true"})
         for mapping in kwargs.get("BlockDeviceMappings", []):
             mapping["Ebs"]["Encrypted"] = True
         return kwargs

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/agent-wow/agent-wow/internal/output"
+	"github.com/agent-wow/agent-wow/internal/questsnapshot"
 	"github.com/agent-wow/agent-wow/pkg/maps"
 	"github.com/spf13/cobra"
 )
@@ -17,9 +18,6 @@ func (deps characterCommands) listCommand(timeout *time.Duration) *cobra.Command
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if completedQuests && !jsonOutput {
 				return errors.New("--completed-quests requires --json")
-			}
-			if completedQuests && deps.completedQuests == nil {
-				return errors.New("completed-quest collector is unavailable")
 			}
 			ctx, cancel, err := characterContext(cmd, *timeout)
 			if err != nil {
@@ -34,19 +32,17 @@ func (deps characterCommands) listCommand(timeout *time.Duration) *cobra.Command
 			if err != nil {
 				return err
 			}
-			defer client.Close()
 			characters, err := client.List(ctx)
+			closeErr := client.Close()
 			if err != nil {
 				return err
 			}
 			if completedQuests {
-				// Release selection before opening another connection for the same
-				// account, and give quest collection fresh per-phase budgets.
-				if err := client.Close(); err != nil {
-					return err
+				if closeErr != nil {
+					return closeErr
 				}
 				cancel()
-				quests, err := deps.completedQuests(cmd.Context(), realm, session, characters, *timeout)
+				quests, err := questsnapshot.Collect(cmd.Context(), realm, session, characters, *timeout)
 				if err != nil {
 					return err
 				}

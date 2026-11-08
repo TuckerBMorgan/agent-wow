@@ -41,37 +41,25 @@ function Update-ViewerClient($DisconnectedSince) {
     Start-ScheduledTask -TaskName AgentWowClient
 }
 
-$current = ''
-$gameInstance = ''
+$job = $null
 $tunnels = @{}
 $disconnectedSince = $null
 while ((Get-Date) -lt $deadline) {
-    & $aws s3 cp "s3://$($s.bucket)/viewer/$($s.instance)/job.json" C:\viewer\job.tmp --only-show-errors 2>$null
-    if ($LASTEXITCODE -eq 0) {
-        Move-Item C:\viewer\job.tmp C:\viewer\job.json -Force
-        $j = Get-Content C:\viewer\job.json | ConvertFrom-Json
-        if ($current -ne $j.job_id -or $gameInstance -ne $j.game_instance) {
-            foreach ($port in $tunnels.Keys) { Stop-GameTunnel $port $tunnels[$port] }
-            $tunnels.Clear()
-            $current = $j.job_id
-            $gameInstance = $j.game_instance
-            $disconnectedSince = $null
-            Remove-Item C:\viewer\account.json -ErrorAction SilentlyContinue
-        }
-        if (!(Test-Path C:\viewer\account.json)) {
-            & $aws s3 cp "s3://$($s.bucket)/viewer/$current/account.json" C:\viewer\account.tmp --only-show-errors 2>$null
-            if ($LASTEXITCODE -eq 0) { Move-Item C:\viewer\account.tmp C:\viewer\account.json -Force }
-        }
-        $state = (& $aws batch describe-jobs --jobs $current --query 'jobs[0].status' --output text 2>$null)
-        if ($LASTEXITCODE -eq 0 -and $state -in @('SUCCEEDED','FAILED')) {
-            Start-Sleep 120
-            Stop-Computer -Force
-            exit
+    # Harbor assigns one trial per viewer and the launcher terminates it at the end.
+    if (!$job) {
+        & $aws s3 cp "s3://$($s.bucket)/viewer/$($s.instance)/job.json" C:\viewer\job.tmp --only-show-errors 2>$null
+        if ($LASTEXITCODE -eq 0) {
+            Move-Item C:\viewer\job.tmp C:\viewer\job.json -Force
+            $job = Get-Content C:\viewer\job.json | ConvertFrom-Json
         }
     }
-    if ($gameInstance) {
+    if ($job) {
+        if (!(Test-Path C:\viewer\account.json)) {
+            & $aws s3 cp "s3://$($s.bucket)/viewer/$($job.job_id)/account.json" C:\viewer\account.tmp --only-show-errors 2>$null
+            if ($LASTEXITCODE -eq 0) { Move-Item C:\viewer\account.tmp C:\viewer\account.json -Force }
+        }
         foreach ($port in @(3724,8085)) {
-            $tunnels[$port] = Update-GameTunnel $port $gameInstance $tunnels[$port]
+            $tunnels[$port] = Update-GameTunnel $port $job.game_instance $tunnels[$port]
         }
         if (Test-Path C:\viewer\account.json) {
             $disconnectedSince = Update-ViewerClient $disconnectedSince

@@ -6,7 +6,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"time"
 
 	"github.com/agent-wow/agent-wow/pkg/auth"
@@ -45,8 +45,7 @@ func collectCharacter(ctx context.Context, realm auth.Realm, saved *auth.Session
 	}
 	defer client.Close()
 	observer := &questRuntime{Runtime: modrt.New(nil, nil, nil), responses: make(chan []byte, 1)}
-	defer observer.Close()
-	session, err := client.EnterWorld(entryCtx, guid, nil, world.Options{Modules: observer, EntryTimeout: timeout})
+	session, err := client.EnterWorld(entryCtx, guid, nil, world.Options{Modules: observer})
 	cancelEntry()
 	if err != nil {
 		return nil, err
@@ -63,7 +62,20 @@ func collectCharacter(ctx context.Context, realm auth.Realm, saved *auth.Session
 	}()
 	queryCtx, cancelQuery := context.WithTimeout(ctx, timeout)
 	defer cancelQuery()
-	return queryCompleted(queryCtx, session, observer.responses)
+	if err := session.SendPacket(queryCtx, opcode.CMSGQueryQuestsCompleted, nil); err != nil {
+		return nil, fmt.Errorf("query completed quests: %w", err)
+	}
+	select {
+	case body := <-observer.responses:
+		return decodeCompleted(body)
+	case <-queryCtx.Done():
+		return nil, queryCtx.Err()
+	case <-session.Done():
+		if err := session.Err(); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("session closed before completed-quest response")
+	}
 }
 
 // An empty runtime handles the session lifecycle; only the trusted observer
@@ -85,30 +97,6 @@ func (r *questRuntime) Publish(op uint16, body []byte) error {
 	}
 }
 
-type querySession interface {
-	SendPacket(context.Context, uint32, []byte) error
-	Done() <-chan struct{}
-	Err() error
-}
-
-func queryCompleted(ctx context.Context, session querySession, responses <-chan []byte) ([]uint32, error) {
-	if err := session.SendPacket(ctx, opcode.CMSGQueryQuestsCompleted, nil); err != nil {
-		return nil, fmt.Errorf("query completed quests: %w", err)
-	}
-	select {
-	case body := <-responses:
-		return decodeCompleted(body)
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case <-session.Done():
-		err := session.Err()
-		if err == nil {
-			err = errors.New("session closed before completed-quest response")
-		}
-		return nil, err
-	}
-}
-
 func decodeCompleted(body []byte) ([]uint32, error) {
 	if len(body) < 4 {
 		return nil, errors.New("completed-quest response is missing its count")
@@ -127,6 +115,6 @@ func decodeCompleted(body []byte) ([]uint32, error) {
 		seen[id] = true
 		quests = append(quests, id)
 	}
-	sort.Slice(quests, func(i, j int) bool { return quests[i] < quests[j] })
+	slices.Sort(quests)
 	return quests, nil
 }

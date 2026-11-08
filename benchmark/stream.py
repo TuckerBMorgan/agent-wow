@@ -168,12 +168,12 @@ def read_json(path):
     return json.loads(path.read_text()) if path.is_file() else None
 
 
-def stop_trial(trial):
-    if trial.poll() is None:
+def finish_trial(trial, session):
+    if trial.poll() is None and not (session / "stopped").exists():
         # Harbor handles SIGINT and performs normal worker cleanup.
         with contextlib.suppress(ProcessLookupError):
             trial.send_signal(signal.SIGINT)
-        trial.wait()
+    trial.wait()
 
 
 def run(args, session):
@@ -280,10 +280,7 @@ def run(args, session):
                         "--expected-bucket-owner", account, *version)
         finally:
             if trial is not None:
-                if (session / "stopped").exists():
-                    trial.wait()
-                else:
-                    stop_trial(trial)
+                finish_trial(trial, session)
     return trial.returncode
 
 
