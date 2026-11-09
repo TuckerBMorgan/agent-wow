@@ -16,17 +16,28 @@ from harbor.environments.ec2 import EC2Environment as HarborEC2Environment
 
 class EC2Environment(HarborEC2Environment):
     def __init__(self, *args: Any, user_data: str, stream_dir: str | None = None,
-                 stream_world_image: str | None = None, **kwargs: Any) -> None:
+                 stream_world_image: str | None = None, spectator_dir: str | None = None,
+                 **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._user_data = user_data
         self._stream_dir = None
+        self._batch_spectator = bool(spectator_dir)
         self._character_poll = None
-        if stream_dir and any(path.name == "stream.compose.yaml" for path in self.extra_docker_compose_paths):
+        if stream_dir and spectator_dir:
+            raise ValueError("Use either stream_dir or spectator_dir.")
+        session_dir = stream_dir or spectator_dir
+        if session_dir and any(path.name == "stream.compose.yaml" for path in self.extra_docker_compose_paths):
             if not stream_world_image or self.launch_mode != "ephemeral":
                 raise ValueError("Streaming requires a mod-watch world image and an ephemeral worker.")
-            self._stream_dir = Path(stream_dir)
-            if not self._stream_dir.is_dir() or self._stream_dir.stat().st_mode & 0o077:
+            directory = Path(session_dir)
+            if not directory.is_dir() or directory.stat().st_mode & 0o077:
                 raise ValueError("Streaming requires an active private viewer session directory.")
+            self._stream_dir = directory
+            if self._batch_spectator:
+                trial_name = self.session_id.removesuffix("__env")
+                if not trial_name or Path(trial_name).name != trial_name or trial_name in (".", ".."):
+                    raise ValueError("Expected a Harbor trial name.")
+                self._stream_dir = directory / trial_name
             self._stream_world_image = stream_world_image
             self._watcher_password = secrets.token_hex(8)
             self.user_tags = {**self.user_tags, "ViewerEnabled": "true"}
@@ -76,10 +87,16 @@ class EC2Environment(HarborEC2Environment):
         )
         if result.return_code != 0:
             raise RuntimeError("Could not create the spectator character and confirm its camera permission.")
+        if self._batch_spectator:
+            self._stream_dir.mkdir(mode=0o700, exist_ok=True)
         worker = self._stream_dir / "worker.tmp"
         with os.fdopen(os.open(worker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as file:
             json.dump({"instance": self.instance_id, "password": self._watcher_password}, file)
         worker.replace(self._stream_dir / "worker.json")
+        # The integrated launcher boots both machines together and holds gameplay until OBS is ready.
+        viewer_starting = self._stream_dir / "viewer-starting"
+        while not self._batch_spectator and viewer_starting.exists():
+            await asyncio.sleep(1)
         self._character_poll = asyncio.create_task(self._find_stream_character())
 
     async def _find_stream_character(self) -> None:
@@ -108,6 +125,10 @@ class EC2Environment(HarborEC2Environment):
                 with contextlib.suppress(asyncio.CancelledError):
                     await self._character_poll
             if self._stream_dir:
-                (self._stream_dir / "stopped").touch()
+                if self._batch_spectator:
+                    (self._stream_dir / "worker.json").unlink(missing_ok=True)
+                    (self._stream_dir / "characters.json").unlink(missing_ok=True)
+                else:
+                    (self._stream_dir / "stopped").touch()
         finally:
             await super().stop(delete)
