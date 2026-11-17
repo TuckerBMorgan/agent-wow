@@ -1,0 +1,88 @@
+name: agent-wow-local
+
+x-game-env: &game-env
+  AC_LOGIN_DATABASE_INFO: "database;3306;root;${LOCAL_DB_PASSWORD:?Use local/run.py};acore_auth"
+  AC_WORLD_DATABASE_INFO: "database;3306;root;${LOCAL_DB_PASSWORD};acore_world"
+  AC_CHARACTER_DATABASE_INFO: "database;3306;root;${LOCAL_DB_PASSWORD};acore_characters"
+  AC_DATA_DIR: /azerothcore/env/dist/data
+x-health: &health
+  interval: 5s
+  timeout: 5s
+  retries: 120
+x-client: &client
+  image: agent-wow-clients:local
+  build:
+    context: .
+    additional_contexts:
+      duel-workspace: ../tmp/local/duel-workspace
+    args:
+      WORKSPACE_IMAGE: ${WORKSPACE_IMAGE:-agent-wow-workspace:local}
+  privileged: true
+  # Daemon PID files and sockets must disappear between starts.
+  tmpfs: ["/run:mode=0755"]
+  networks: [game]
+  depends_on:
+    worldserver: {condition: service_healthy}
+  healthcheck:
+    <<: *health
+    test: [CMD, bash, -c, "grep -q 'world session ready' /workspace/logs/session.log && exec 3<>/dev/tcp/127.0.0.1/8086"]
+
+services:
+  database:
+    extends: {file: ../benchmark/template/environment/docker-compose.yaml, service: database}
+    environment:
+      MYSQL_ROOT_PASSWORD: ${LOCAL_DB_PASSWORD}
+    volumes: ["database:/var/lib/mysql"]
+  db-import:
+    extends: {file: ../benchmark/template/environment/docker-compose.yaml, service: db-import}
+    environment: *game-env
+  client-data:
+    extends: {file: ../benchmark/template/environment/docker-compose.yaml, service: client-data}
+  authserver:
+    extends: {file: ../benchmark/template/environment/docker-compose.yaml, service: authserver}
+    environment: *game-env
+  worldserver:
+    extends: {file: ../benchmark/template/environment/docker-compose.yaml, service: worldserver}
+    environment: *game-env
+    command: [bash, -c, "{ cat /run/secrets/accounts; cat; } | worldserver"]
+    stdin_open: true
+    secrets: [accounts]
+  client-1:
+    <<: *client
+    environment:
+      WOW_ACCOUNT: LOCALALPHA
+      WOW_PASSWORD: ${LOCAL_ALPHA_PASSWORD}
+      WOW_CHARACTER: Localalpha
+      WOW_CLASS: warrior
+    volumes:
+      - client-1-duel-workspace:/workspace
+      - client-1-home:/home/node
+      - client-1-modules:/var/lib/docker
+  client-2:
+    <<: *client
+    environment:
+      WOW_ACCOUNT: LOCALBETA
+      WOW_PASSWORD: ${LOCAL_BETA_PASSWORD}
+      WOW_CHARACTER: Localbeta
+      WOW_CLASS: mage
+    volumes:
+      - client-2-duel-workspace:/workspace
+      - client-2-home:/home/node
+      - client-2-modules:/var/lib/docker
+
+secrets:
+  accounts:
+    file: ../tmp/local/accounts.txt
+networks:
+  game: {}
+  database: {internal: true}
+volumes:
+  database: {}
+  configuration: {}
+  client-data: {}
+  client-1-duel-workspace: {}
+  client-1-home: {}
+  client-1-modules: {}
+  client-2-duel-workspace: {}
+  client-2-home: {}
+  client-2-modules: {}

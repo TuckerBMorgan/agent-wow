@@ -1,0 +1,50 @@
+api_version: 1
+enabled: true
+description: Client-side start/tick duel connector (100 ms)
+compose:
+  file: compose.yaml
+  service: module
+grpc:
+  descriptor_set: module.pb
+rpc:
+  prepare: /agentwow.duel.v1.Duel/Prepare
+  challenge: /agentwow.duel.v1.Duel/Challenge
+  status: /agentwow.duel.v1.Duel/Status
+  stop: /agentwow.duel.v1.Duel/Cancel
+packets:
+  SMSG_NEW_WORLD: /agentwow.duel.v1.Duel/OnPacket
+  SMSG_UPDATE_OBJECT: /agentwow.duel.v1.Duel/OnPacket
+  SMSG_DESTROY_OBJECT: /agentwow.duel.v1.Duel/OnPacket
+  MSG_MOVE_START_FORWARD: /agentwow.duel.v1.Duel/OnPacket
+  MSG_MOVE_START_BACKWARD: /agentwow.duel.v1.Duel/OnPacket
+  MSG_MOVE_STOP: /agentwow.duel.v1.Duel/OnPacket
+  MSG_MOVE_START_STRAFE_LEFT: /agentwow.duel.v1.Duel/OnPacket
+  MSG_MOVE_START_STRAFE_RIGHT: /agentwow.duel.v1.Duel/OnPacket
+  MSG_MOVE_STOP_STRAFE: /agentwow.duel.v1.Duel/OnPacket
+  MSG_MOVE_JUMP: /agentwow.duel.v1.Duel/OnPacket
+  MSG_MOVE_START_TURN_LEFT: /agentwow.duel.v1.Duel/OnPacket
+  MSG_MOVE_START_TURN_RIGHT: /agentwow.duel.v1.Duel/OnPacket
+  MSG_MOVE_STOP_TURN: /agentwow.duel.v1.Duel/OnPacket
+  MSG_MOVE_START_PITCH_UP: /agentwow.duel.v1.Duel/OnPacket
+  MSG_MOVE_START_PITCH_DOWN: /agentwow.duel.v1.Duel/OnPacket
+  MSG_MOVE_STOP_PITCH: /agentwow.duel.v1.Duel/OnPacket
+  MSG_MOVE_SET_FACING: /agentwow.duel.v1.Duel/OnPacket
+  MSG_MOVE_HEARTBEAT: /agentwow.duel.v1.Duel/OnPacket
+  SMSG_INITIAL_SPELLS: /agentwow.duel.v1.Duel/OnPacket
+  SMSG_LEARNED_SPELL: /agentwow.duel.v1.Duel/OnPacket
+  SMSG_CAST_FAILED: /agentwow.duel.v1.Duel/OnPacket
+  SMSG_SPELL_START: /agentwow.duel.v1.Duel/OnPacket
+  SMSG_SPELL_GO: /agentwow.duel.v1.Duel/OnPacket
+  SMSG_SPELL_COOLDOWN: /agentwow.duel.v1.Duel/OnPacket
+  SMSG_ATTACKSTART: /agentwow.duel.v1.Duel/OnPacket
+  SMSG_ATTACKSTOP: /agentwow.duel.v1.Duel/OnPacket
+  SMSG_ATTACKERSTATEUPDATE: /agentwow.duel.v1.Duel/OnPacket
+  SMSG_DUEL_REQUESTED: /agentwow.duel.v1.Duel/OnPacket
+  SMSG_DUEL_COMPLETE: /agentwow.duel.v1.Duel/OnPacket
+  SMSG_DUEL_WINNER: /agentwow.duel.v1.Duel/OnPacket
+  SMSG_COMPRESSED_UPDATE_OBJECT: /agentwow.duel.v1.Duel/OnPacket
+  SMSG_LOGIN_VERIFY_WORLD: /agentwow.duel.v1.Duel/OnPacket
+  SMSG_SPELLNONMELEEDAMAGELOG: /agentwow.duel.v1.Duel/OnPacket
+  SMSG_DUEL_COUNTDOWN: /agentwow.duel.v1.Duel/OnPacket
+lifecycle:
+  before_logout: /agentwow.duel.v1.Duel/Stop

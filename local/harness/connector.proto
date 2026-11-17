@@ -1,0 +1,14 @@
+syntax = "proto3";
+package agentwow.duel.v1;
+import "api/module/v1/session.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/struct.proto";
+
+service Duel {
+  rpc Prepare(google.protobuf.Struct) returns (google.protobuf.Empty);
+  rpc Challenge(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc Status(google.protobuf.Struct) returns (google.protobuf.Struct);
+  rpc OnPacket(agentwow.module.v1.WorldPacket) returns (google.protobuf.Empty);
+  rpc Stop(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc Cancel(google.protobuf.Empty) returns (google.protobuf.Empty);
+}

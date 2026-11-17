@@ -1,0 +1,9 @@
+services:
+  module:
+    image: agent-wow-harness:local
+    network_mode: none
+    environment:
+      SELECTED_BUILD: ${AGENT_WOW_SELECTED_BUILD:-}
+    volumes:
+      - .:/harness:ro
+      - ../../builds:/builds:ro
