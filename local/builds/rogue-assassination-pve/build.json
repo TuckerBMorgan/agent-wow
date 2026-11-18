@@ -1,0 +1,374 @@
+{
+  "race_id": 2,
+  "class_id": 4,
+  "appearance": {
+    "gender": 0,
+    "skin": 0,
+    "face": 0,
+    "hair_style": 0,
+    "hair_color": 0,
+    "facial_style": 0
+  },
+  "equipment": {
+    "head": {
+      "item_id": 51252,
+      "random_property_id": 0,
+      "enchant_id": 3817,
+      "socket_enchant_id": 0,
+      "gem_enchant_ids": [
+        3628,
+        3521,
+        0
+      ]
+    },
+    "neck": {
+      "item_id": 50633,
+      "random_property_id": 0,
+      "enchant_id": 0,
+      "socket_enchant_id": 0,
+      "gem_enchant_ids": [
+        3879,
+        0,
+        0
+      ]
+    },
+    "shoulders": {
+      "item_id": 51254,
+      "random_property_id": 0,
+      "enchant_id": 3808,
+      "socket_enchant_id": 0,
+      "gem_enchant_ids": [
+        3521,
+        0,
+        0
+      ]
+    },
+    "shirt": null,
+    "chest": {
+      "item_id": 50656,
+      "random_property_id": 0,
+      "enchant_id": 3832,
+      "socket_enchant_id": 0,
+      "gem_enchant_ids": [
+        3521,
+        3521,
+        3528
+      ]
+    },
+    "waist": {
+      "item_id": 50707,
+      "random_property_id": 0,
+      "enchant_id": 0,
+      "socket_enchant_id": 3729,
+      "gem_enchant_ids": [
+        3521,
+        3521,
+        3521
+      ]
+    },
+    "legs": {
+      "item_id": 51253,
+      "random_property_id": 0,
+      "enchant_id": 3823,
+      "socket_enchant_id": 0,
+      "gem_enchant_ids": [
+        3521,
+        3528,
+        0
+      ]
+    },
+    "feet": {
+      "item_id": 50607,
+      "random_property_id": 0,
+      "enchant_id": 3606,
+      "socket_enchant_id": 0,
+      "gem_enchant_ids": [
+        3528,
+        3528,
+        0
+      ]
+    },
+    "wrists": {
+      "item_id": 54580,
+      "random_property_id": 0,
+      "enchant_id": 3845,
+      "socket_enchant_id": 0,
+      "gem_enchant_ids": [
+        3521,
+        0,
+        0
+      ]
+    },
+    "hands": {
+      "item_id": 51251,
+      "random_property_id": 0,
+      "enchant_id": 3604,
+      "socket_enchant_id": 0,
+      "gem_enchant_ids": [
+        3521,
+        0,
+        0
+      ]
+    },
+    "ring1": {
+      "item_id": 54576,
+      "random_property_id": 0,
+      "enchant_id": 0,
+      "socket_enchant_id": 0,
+      "gem_enchant_ids": [
+        3528,
+        0,
+        0
+      ]
+    },
+    "ring2": {
+      "item_id": 50402,
+      "random_property_id": 0,
+      "enchant_id": 0,
+      "socket_enchant_id": 0,
+      "gem_enchant_ids": [
+        3528,
+        0,
+        0
+      ]
+    },
+    "trinket1": {
+      "item_id": 50363,
+      "random_property_id": 0,
+      "enchant_id": 0,
+      "socket_enchant_id": 0,
+      "gem_enchant_ids": [
+        0,
+        0,
+        0
+      ]
+    },
+    "trinket2": {
+      "item_id": 54590,
+      "random_property_id": 0,
+      "enchant_id": 0,
+      "socket_enchant_id": 0,
+      "gem_enchant_ids": [
+        0,
+        0,
+        0
+      ]
+    },
+    "back": {
+      "item_id": 50653,
+      "random_property_id": 0,
+      "enchant_id": 3831,
+      "socket_enchant_id": 0,
+      "gem_enchant_ids": [
+        3528,
+        0,
+        0
+      ]
+    },
+    "main_hand": {
+      "item_id": 50736,
+      "random_property_id": 0,
+      "enchant_id": 3789,
+      "socket_enchant_id": 0,
+      "gem_enchant_ids": [
+        3521,
+        0,
+        0
+      ]
+    },
+    "off_hand": {
+      "item_id": 50621,
+      "random_property_id": 0,
+      "enchant_id": 3789,
+      "socket_enchant_id": 0,
+      "gem_enchant_ids": [
+        3528,
+        0,
+        0
+      ]
+    },
+    "ranged": {
+      "item_id": 50733,
+      "random_property_id": 0,
+      "enchant_id": 3608,
+      "socket_enchant_id": 0,
+      "gem_enchant_ids": [
+        3521,
+        0,
+        0
+      ]
+    },
+    "tabard": null
+  },
+  "inventory": [],
+  "ammo_id": 0,
+  "specializations": [
+    {
+      "talent_rank_spell_ids": [
+        1329,
+        13805,
+        13845,
+        13852,
+        13866,
+        14072,
+        14117,
+        14137,
+        14142,
+        14159,
+        14161,
+        14177,
+        14195,
+        16515,
+        31209,
+        31236,
+        51627,
+        51636,
+        51662,
+        51668,
+        58410,
+        58425,
+        58426
+      ],
+      "unspent_points": 0,
+      "glyph_ids": [
+        733,
+        466,
+        465,
+        714,
+        464,
+        732
+      ]
+    }
+  ],
+  "active_specialization": 0,
+  "professions": {
+    "202": 450,
+    "755": 450
+  },
+  "spell_ids": [
+    81,
+    196,
+    198,
+    201,
+    203,
+    204,
+    264,
+    266,
+    522,
+    669,
+    674,
+    921,
+    1180,
+    1725,
+    1766,
+    1776,
+    1784,
+    1804,
+    1833,
+    1842,
+    1860,
+    2094,
+    2382,
+    2479,
+    2567,
+    2764,
+    2836,
+    3018,
+    3050,
+    3127,
+    3365,
+    3918,
+    3919,
+    3920,
+    4073,
+    5011,
+    5938,
+    6233,
+    6246,
+    6247,
+    6477,
+    6478,
+    6603,
+    6774,
+    7266,
+    7267,
+    7355,
+    8386,
+    8643,
+    8647,
+    9077,
+    9078,
+    9125,
+    11305,
+    12749,
+    13166,
+    13258,
+    13805,
+    13845,
+    13852,
+    13866,
+    14072,
+    14117,
+    14137,
+    14142,
+    14159,
+    14161,
+    14177,
+    14195,
+    15590,
+    16092,
+    16515,
+    19804,
+    20572,
+    20573,
+    20574,
+    21184,
+    21563,
+    21651,
+    21652,
+    22027,
+    22810,
+    25255,
+    25493,
+    26669,
+    26889,
+    26925,
+    31209,
+    31224,
+    31236,
+    32259,
+    45927,
+    48638,
+    48657,
+    48659,
+    48666,
+    48668,
+    48672,
+    48674,
+    48676,
+    48691,
+    49383,
+    51627,
+    51636,
+    51662,
+    51668,
+    51722,
+    51723,
+    51724,
+    57934,
+    57993,
+    58017,
+    58027,
+    58032,
+    58410,
+    58425,
+    58426,
+    61437,
+    63249,
+    63256,
+    63268,
+    63644,
+    63645,
+    68398
+  ]
+}

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Provision both selected builds, stage them in Gurubashi, and run one duel.
+"""Load both selected templates and run one duel in Gurubashi.
 
 Run python3 local/duel.py [--check] [--seconds 180]. Results: tmp/local/duels/.
 """
@@ -18,7 +18,7 @@ def staged(state, player):
     actor = state.get('self', {})
     position = actor.get('position')
     return (state.get('ready') and state.get('name') == player['name']
-            and actor.get('guid') == player['guid'] and actor.get('health', 0) > 0
+            and actor.get('guid') and actor.get('health', 0) > 0
             and actor['health'] == actor.get('max_health')
             and actor.get('power') == (0 if actor.get('power_type') in (1, 6) else actor.get('max_power'))
             and state.get('map_id') == 0 and position
@@ -73,6 +73,8 @@ def fight(ids, players, seconds):
             while True:
                 states = observe(log, connecting=True)
                 if states and all(staged(s, p) for s, p in zip(states, players)):
+                    for state, player in zip(states, players):
+                        player['guid'] = state['self']['guid']
                     result['initial_states'] = states
                     break
                 if time.monotonic() >= deadline:

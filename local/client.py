@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Connect the provisioned fighter; stay idle until the coordinator selects one."""
+"""Connect the imported fighter; stay idle until the coordinator selects one."""
 import json
 import os
 from pathlib import Path
@@ -32,6 +32,14 @@ try:
                 raise
             time.sleep(3)
     name = character["name"]
+    deadline = time.monotonic() + 60
+    while True:
+        roster = json.loads(game("char", "list", "--json", "--timeout", "5s"))
+        if any(c["name"] == name for c in roster["characters"]):
+            break
+        if time.monotonic() >= deadline:
+            raise SystemExit("Imported character did not become available")
+        time.sleep(1)
     os.environ["AGENT_WOW_SELECTED_BUILD"] = character["build"]
     # char play already verifies that this account owns the selected character.
     os.execvp("agent-wow", ["agent-wow", "char", "play", name, "--timeout", "30s"])

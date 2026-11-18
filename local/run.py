@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """Local realm + two clients. First start:
-DUEL_BUILDS=/path/to/builds python3 local/run.py up
+python3 local/run.py up
 
 Open either workspace: python3 local/run.py exec --user node client-1 bash
 Inside it, run codex and sign in with your subscription account.
 After both agents select builds and write harnesses, exit Codex and run local/duel.py.
 Inspect: python3 local/run.py ps; stop: python3 local/run.py down
-Workspaces, logins and characters persist until their Docker volumes are removed.
+Workspaces and logins persist until their Docker volumes are removed.
 """
 import os
 from pathlib import Path
 import secrets
-import shutil
 import subprocess
 import sys
 
@@ -43,11 +42,6 @@ if args == ["up"]:
     if head != revision:
         subprocess.run(["git", "-C", str(duel), "fetch", "--depth", "1", "origin", revision], check=True)
         subprocess.run(["git", "-C", str(duel), "checkout", "-B", "main", "FETCH_HEAD"], check=True)
-    builds = Path(os.environ.get("DUEL_BUILDS", duel / "builds")).resolve()
-    if not (builds / "index.json").is_file():
-        raise SystemExit("Set DUEL_BUILDS to the supplied build library (containing index.json) on first startup")
-    if builds != (duel / "builds").resolve():
-        shutil.copytree(builds, duel / "builds", dirs_exist_ok=True)
     if "WORKSPACE_IMAGE" not in os.environ:
         subprocess.run(["docker", "build", "-t", "agent-wow-workspace:local",
                         "--build-arg", "WORKSPACE_REF=4d50bd316ae2498314f9ee5f4edcdaad7b06c216",

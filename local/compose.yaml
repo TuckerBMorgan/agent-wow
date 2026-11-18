@@ -32,7 +32,7 @@ services:
     extends: {file: ../benchmark/template/environment/docker-compose.yaml, service: database}
     environment:
       MYSQL_ROOT_PASSWORD: ${LOCAL_DB_PASSWORD}
-    volumes: ["database:/var/lib/mysql"]
+    volumes: ["duel-database:/var/lib/mysql"]
   db-import:
     extends: {file: ../benchmark/template/environment/docker-compose.yaml, service: db-import}
     environment: *game-env
@@ -47,6 +47,7 @@ services:
     command: [bash, -c, "{ cat /run/secrets/accounts; cat; } | worldserver"]
     stdin_open: true
     secrets: [accounts]
+    volumes: ["./builds:/duel-builds:ro"]
   client-1:
     <<: *client
     environment:
@@ -54,6 +55,7 @@ services:
       WOW_PASSWORD: ${LOCAL_ALPHA_PASSWORD}
     volumes:
       - client-1-duel-workspace:/workspace
+      - ./builds:/workspace/builds:ro
       - client-1-home:/home/node
       - client-1-modules:/var/lib/docker
   client-2:
@@ -63,6 +65,7 @@ services:
       WOW_PASSWORD: ${LOCAL_BETA_PASSWORD}
     volumes:
       - client-2-duel-workspace:/workspace
+      - ./builds:/workspace/builds:ro
       - client-2-home:/home/node
       - client-2-modules:/var/lib/docker
 
@@ -73,7 +76,7 @@ networks:
   game: {}
   database: {internal: true}
 volumes:
-  database: {}
+  duel-database: {}
   configuration: {}
   client-data: {}
   client-1-duel-workspace: {}
