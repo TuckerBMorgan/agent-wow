@@ -40,8 +40,7 @@ RUN git init /opt/azerothcore-reference \
     && git -C /opt/azerothcore-reference remote add origin https://github.com/azerothcore/azerothcore-wotlk.git \
     && git -C /opt/azerothcore-reference fetch --depth 1 origin "${AZEROTHCORE_REF}" \
     && git -C /opt/azerothcore-reference checkout --detach FETCH_HEAD
-COPY --chmod=755 benchmark/start-workspace.sh /usr/local/bin/start-workspace
-COPY --chmod=755 benchmark/snapshot.sh /usr/local/bin/snapshot-characters
+COPY --chmod=755 runtime/start-workspace.sh /usr/local/bin/start-workspace
 WORKDIR /workspace
 RUN printf 'AGENT\nHARBORPLAYER\n' | agent-wow auth init \
     && chown -R node:node /workspace

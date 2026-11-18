@@ -1,9 +1,7 @@
 **
-!benchmark/
-benchmark/**
-!benchmark/Dockerfile
-!benchmark/start-workspace.sh
-!benchmark/snapshot.sh
+!runtime/
+!runtime/Dockerfile
+!runtime/start-workspace.sh
 !go.mod
 !go.sum
 !main.go

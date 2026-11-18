@@ -8,23 +8,6 @@ x-health: &health
   timeout: 5s
   retries: 120
 services:
-  main:
-    image: __AGENT_IMAGE__
-    platform: linux/amd64
-    privileged: true
-    networks: [game]
-    depends_on:
-      worldserver: {condition: service_healthy}
-    # No host Docker socket, ports, directories, or shared game volumes.
-    volumes:
-      - module-images:/var/lib/docker
-  observer:
-    image: __AGENT_IMAGE__
-    platform: linux/amd64
-    entrypoint: [sleep, infinity]
-    networks: [game]
-    depends_on:
-      worldserver: {condition: service_healthy}
   database:
     image: docker.io/library/mysql@sha256:a0225d1ea6631c8bc2385dc4c2faba17bbf1834ecf369e1659a9a382bd8d5dd7
     platform: linux/amd64
@@ -61,8 +44,6 @@ services:
     platform: linux/amd64
     environment: *game-env
     networks: [game, database]
-    # The fresh trial owns its game account. The command is queued until startup.
-    command: [bash, -c, "{ printf 'account create AGENT HARBORPLAYER\\n'; sleep infinity; } | worldserver"]
     volumes:
       - configuration:/azerothcore/env/dist/etc
       - client-data:/azerothcore/env/dist/data:ro
@@ -79,4 +60,3 @@ networks:
 volumes:
   configuration: {}
   client-data: {}
-  module-images: {}

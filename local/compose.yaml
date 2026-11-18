@@ -29,20 +29,20 @@ x-client: &client
 
 services:
   database:
-    extends: {file: ../benchmark/template/environment/docker-compose.yaml, service: database}
+    extends: {file: ../runtime/compose.yaml, service: database}
     environment:
       MYSQL_ROOT_PASSWORD: ${LOCAL_DB_PASSWORD}
     volumes: ["duel-database:/var/lib/mysql"]
   db-import:
-    extends: {file: ../benchmark/template/environment/docker-compose.yaml, service: db-import}
+    extends: {file: ../runtime/compose.yaml, service: db-import}
     environment: *game-env
   client-data:
-    extends: {file: ../benchmark/template/environment/docker-compose.yaml, service: client-data}
+    extends: {file: ../runtime/compose.yaml, service: client-data}
   authserver:
-    extends: {file: ../benchmark/template/environment/docker-compose.yaml, service: authserver}
+    extends: {file: ../runtime/compose.yaml, service: authserver}
     environment: *game-env
   worldserver:
-    extends: {file: ../benchmark/template/environment/docker-compose.yaml, service: worldserver}
+    extends: {file: ../runtime/compose.yaml, service: worldserver}
     environment: *game-env
     command: [bash, -c, "{ cat /run/secrets/accounts; cat; } | worldserver"]
     stdin_open: true

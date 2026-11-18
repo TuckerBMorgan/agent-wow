@@ -50,7 +50,7 @@ if args == ["up"]:
     if "WORKSPACE_IMAGE" not in os.environ:
         subprocess.run(["docker", "build", "-t", "agent-wow-workspace:local",
                         "--build-arg", "WORKSPACE_REF=4d50bd316ae2498314f9ee5f4edcdaad7b06c216",
-                        "-f", "benchmark/Dockerfile", "."], cwd=root, check=True)
+                        "-f", "runtime/Dockerfile", "."], cwd=root, check=True)
     subprocess.run(compose + ["build", "client-1"], check=True)
     subprocess.run(compose + ["up", "-d", "--wait", "--wait-timeout", "1800"], check=True)
     subprocess.run([sys.executable, str(root / "local/harness/install.py")], check=True)
