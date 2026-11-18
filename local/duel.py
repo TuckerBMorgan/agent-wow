@@ -134,7 +134,7 @@ def fight(ids, players, seconds):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--check', action='store_true', help='Validate both builds without provisioning or fighting')
+    parser.add_argument('--check', action='store_true', help='Check both catalog selections without creating characters or fighting')
     parser.add_argument('--seconds', type=int, default=180, help='Maximum fighting time (default: 180 seconds)')
     args = parser.parse_args()
     if args.seconds <= 0:

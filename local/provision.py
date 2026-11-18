@@ -95,8 +95,11 @@ class Player:
             '--entrypoint', '/provision-client', '-v', str(binary) + ':/provision-client:ro', image],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
         try:
-            self.identity = self.call(dict(action='open' if existing else 'create', name=name, **credentials,
-                race_id=build['race_id'], class_id=build['class_id'], appearance=build['appearance']))
+            a = build['appearance']
+            options = {'name': name, 'race': build['race_id'], 'class': build['class_id'],
+                'gender': a['gender'], 'skin': a['skin'], 'face': a['face'],
+                'hairStyle': a['hair_style'], 'hairColor': a['hair_color'], 'facialHair': a['facial_style']}
+            self.identity = self.call(dict(action='open' if existing else 'create', options=options, **credentials))
         except Exception:
             self.close()
             raise
@@ -104,7 +107,7 @@ class Player:
     def call(self, request):
         self.process.stdin.write(json.dumps(request) + '\n')
         self.process.stdin.flush()
-        if not select.select([self.process.stdout], [], [], 50)[0]:
+        if not select.select([self.process.stdout], [], [], 90)[0]:
             raise RuntimeError('Provisioning client timed out')
         line = self.process.stdout.readline()
         if not line:
@@ -146,27 +149,23 @@ def export(console, world, name, path):
 
 
 def verify_saved(console, world, name, path, build, dbc):
-    # Saving is asynchronous; only retry reads, never a mutation.
+    expected = validator.normalize(build)
     deadline = time.monotonic() + 10
-    differences = []
     while True:
         export(console, world, name, path)
         try:
-            observed = validator.observed_build(path, name)
-            validator.check_specializations(observed, dbc, from_dump=True)
-            # Native default secondary skills (e.g. DK First Aid) cannot be unlearned by clients.
-            # Compare them only when the build explicitly selects them; primary skills remain exact.
-            for skill in list(observed.get('professions', {})):
-                if int(skill) not in validator.PRIMARY and skill not in build['professions']:
-                    del observed['professions'][skill]
-            differences = list(validator.differences(validator.normalize(build), validator.normalize(observed)))
-            if not differences:
-                path.with_suffix('.differences.json').unlink(missing_ok=True)
-                return
+            observed = validator.observed_build(path, name, dbc)
+            # Native secondary skills (e.g. DK First Aid) need not be selected in the build.
+            observed['professions'] = {s: r for s, r in observed['professions'].items()
+                                      if int(s) in validator.PRIMARY or s in build['professions']}
+            actual = validator.normalize(observed)
         except (ValueError, KeyError) as error:
-            differences = [{'error': str(error)}]
+            actual = {'error': str(error)}
+        if actual == expected:
+            path.with_suffix('.differences.json').unlink(missing_ok=True)
+            return
         if time.monotonic() >= deadline:
-            save(path.with_suffix('.differences.json'), differences)
+            save(path.with_suffix('.differences.json'), dict(expected=expected, actual=actual))
             raise ValueError('Saved character did not match the selected build; inspect ' + str(path))
         time.sleep(0.2)
 
@@ -174,31 +173,6 @@ def verify_saved(console, world, name, path, build, dbc):
 def packed(guid):
     octets = guid.to_bytes(8, 'little')
     return bytes([sum(1 << i for i, b in enumerate(octets) if b)]) + bytes(b for b in octets if b)
-
-
-def read_inventory(snapshot):
-    deadline = time.monotonic() + 5
-    while True:
-        data = snapshot()
-        instances = {i['guid']: i for i in data['item_instance']}
-        if all(i['item'] in instances for i in data['character_inventory']):
-            return [dict(instances[i['item']], bag=int(i['bag']), slot=int(i['slot'])) for i in data['character_inventory']]
-        if time.monotonic() >= deadline:
-            raise RuntimeError('The native inventory save did not settle')
-        time.sleep(0.1)
-
-
-def locate(inventory, item_id, claimed):
-    deadline = time.monotonic() + 5
-    while True:
-        found = next((i for i in inventory() if int(i['itemEntry']) == item_id
-                      and i['bag'] == 0 and i['slot'] >= 23 and i['guid'] not in claimed), None)
-        if found:
-            claimed.add(found['guid'])  # Dumps may still contain an already consumed/equipped item.
-            return found
-        if time.monotonic() >= deadline:
-            raise ValueError('Granted item missing: ' + str(item_id))
-        time.sleep(0.2)
 
 
 def teleport_to_arena(console, name):
@@ -216,11 +190,28 @@ def apply_build(plan, player, console, world, dbc):
         export(console, world, name, dump_path)
         return validator.tables(dump_path)
 
-    def inventory():
-        return read_inventory(snapshot)
+    def inventory(item_id=None):
+        console.command('saveall')
+        deadline = time.monotonic() + 30
+        while True:
+            export(console, world, name, dump_path)
+            data = validator.tables(dump_path)
+            instances = {i['guid']: i for i in data['item_instance']}
+            if all(i['item'] in instances for i in data['character_inventory']):
+                items = [dict(instances[i['item']], bag=int(i['bag']), slot=int(i['slot'])) for i in data['character_inventory']]
+                if item_id is None:
+                    return items
+                found = next((i for i in items if int(i['itemEntry']) == item_id
+                              and i['bag'] == 0 and i['slot'] >= 23 and i['guid'] not in claimed), None)
+                if found:
+                    claimed.add(found['guid'])  # Ignore consumed/equipped items in stale dumps.
+                    return found
+            if time.monotonic() >= deadline:
+                raise ValueError(f'Native inventory did not settle (requested item {item_id})')
+            time.sleep(0.2)
 
     def grant(item_id, count=1):
-        player.chat(f'additem {item_id} {count}')
+        player.chat(f'additem {int(item_id)} {int(count)}')
 
     def item_guid(item):
         return (0x4000 << 48) | int(item['guid'])
@@ -258,7 +249,7 @@ def apply_build(plan, player, console, world, dbc):
             raise ValueError('No profession training spell for ' + str(skill))
         row = max(training, key=lambda r: (max(r[80+i] for i,e in enumerate(r[71:74]) if e == 44 and r[110+i] == skill), -r[0]))
         player.chat('cast self ' + str(row[0]) + ' triggered')
-        rank = crafting_skills[str(skill)]
+        rank = int(crafting_skills[str(skill)])
         player.chat(f'setskill {skill} {rank} {rank}')
     rank_map = {spell: (row, rank) for row in talents.values() for rank, spell in enumerate(row[4:9]) if spell}
     for spell in sorted(build['specializations'][0]['talent_rank_spell_ids'], key=lambda s: (rank_map[s][0][2], rank_map[s][0][3])):
@@ -284,7 +275,7 @@ def apply_build(plan, player, console, world, dbc):
         if item is None:
             continue
         grant(item['item_id'])
-        instance = locate(inventory, item['item_id'], claimed)
+        instance = inventory(item['item_id'])
         equipped[slot] = item_guid(instance)
         player.packet(0x10f, struct.pack('<QB', equipped[slot], validator.SLOTS.index(slot)))
     print(plan['client'] + ': equipment applied', flush=True)
@@ -299,7 +290,7 @@ def apply_build(plan, player, console, world, dbc):
                 continue
             gem_id = enchantments[enchant_id][33]
             grant(gem_id)
-            gem = locate(inventory, gem_id, claimed)
+            gem = inventory(gem_id)
             gems = [0, 0, 0]
             gems[index] = item_guid(gem)
             player.packet(0x347, struct.pack('<4Q', equipped[slot], *gems))
@@ -313,7 +304,7 @@ def apply_build(plan, player, console, world, dbc):
             glyph_id = build['specializations'][0]['glyph_ids'][slot]
             glyph_spell = next(r[0] for r in spell_rows.values() for i,e in enumerate(r[71:74]) if e == 74 and r[110+i] == glyph_id)
             grant(glyph_item)
-            instance = locate(inventory, glyph_item, claimed)
+            instance = inventory(glyph_item)
             player.packet(0xab, struct.pack('<BBB I Q I B I', 255, instance['slot'], 1, glyph_spell, item_guid(instance), slot, 0, 0), glyph_spell)
     print(plan['client'] + ': glyphs applied', flush=True)
     for row in snapshot()['character_skills']:
@@ -325,8 +316,6 @@ def apply_build(plan, player, console, world, dbc):
     for item in inventory():
         if item['bag'] == 0 and item['slot'] >= 23:
             grant(int(item['itemEntry']), -int(item['count']))
-    for item in build['inventory']:
-        grant(item['item_id'], item['count'])
     if build['ammo_id']:
         player.packet(0x268, struct.pack('<I', build['ammo_id']))
 
@@ -406,39 +395,17 @@ def run(check=False, on_ready=None):
                 old = json.loads(previous.read_text())
                 if old.get('status') != 'complete':
                     raise ValueError('An incomplete provisioning attempt exists; inspect ' + str(previous))
-        dbc = STATE / 'dbc'
-        dbc.mkdir(exist_ok=True)
-        for name in ('Talent', 'TalentTab', 'GlyphProperties', 'GlyphSlot', 'Spell', 'SpellItemEnchantment'):
-            docker('cp', ids['worldserver'] + ':/azerothcore/env/dist/data/dbc/' + name + '.dbc', dbc / (name + '.dbc'))
-        spells = validator.dbc_rows(dbc / 'Spell.dbc')
         for plan in plans:
-            validator.validate(plan['build'])
-            validator.check_specializations(plan['build'], dbc)
-            if len(plan['build']['specializations']) != 1:
-                raise ValueError('This provisioner supports the supplied single-specialization builds')
-            all_items = [i for i in plan['build']['equipment'].values() if i] + plan['build']['inventory']
-            if any(i['random_property_id'] for i in all_items):
-                raise ValueError('Random-property items are not supported by the supplied build provisioner')
-            if any(i['enchant_id'] or i['socket_enchant_id'] or any(i['gem_enchant_ids']) for i in plan['build']['inventory']):
-                raise ValueError('Enchanted inventory items are not supported; select a supplied build')
+            validator.supported(plan['build'])
             if not re.fullmatch(r'[A-Z0-9]{1,17}', plan['account']):
                 raise ValueError('Unexpected local player account name')
-            for slot, data in plan['source']['enchants'].items():
-                item = plan['build']['equipment'].get(slot)
-                spell_id = data['application_spell_id']
-                row = spells.get(spell_id) if type(spell_id) is int else None
-                expected = item['socket_enchant_id' if slot == 'waist' else 'enchant_id'] if item else 0
-                if not row or not expected or not any(effect in (53, 156) and row[110+i] == expected for i,effect in enumerate(row[71:74])):
-                    raise ValueError('Source enchant metadata does not match the selected build')
-                if row[18] not in (0, 1552):
-                    raise ValueError('Unsupported crafting spell focus in selected build')
-            for choices in plan['source']['glyph_choices'].values():
-                for refs in choices:
-                    if not refs or any(r['kind'] not in ('item', 'spell') or type(r['id']) is not int or r['id'] <= 0 for r in refs):
-                        raise ValueError('Invalid source glyph reference')
         print(json.dumps([dict(client=p['client'], build=p['path'], account=p['account']) for p in plans], indent=2), flush=True)
         if check:
             return
+        dbc = STATE / 'dbc'
+        dbc.mkdir(exist_ok=True)
+        for name in ('Talent', 'GlyphSlot', 'Spell', 'SpellItemEnchantment'):
+            docker('cp', ids['worldserver'] + ':/azerothcore/env/dist/data/dbc/' + name + '.dbc', dbc / (name + '.dbc'))
         for client in CLIENTS:
             if process_running(ids[client], 'codex'):
                 raise ValueError('Finish and exit Codex in ' + client + ' before provisioning')
@@ -450,7 +417,7 @@ def run(check=False, on_ready=None):
         binary = STATE / 'client'
         docker('run', '--rm', '--network', network, '--entrypoint', 'go',
                '-e', 'GOMODCACHE=/output/go-mod', '-e', 'GOCACHE=/output/go-build', '-v', str(ROOT / 'local') + ':/input:ro',
-               '-v', str(STATE) + ':/output', '-w', '/workspace/agent-wow', image, 'build', '-o', '/output/client', '/input/provision.go', timeout=300)
+               '-v', str(STATE) + ':/output', '-w', '/workspace/agent-wow', image, 'build', '-o', '/output/client', '/input/provision.go', timeout=600)
         console = Console(ids['worldserver'])
         admin_path = STATE / 'admin.json'
         initialized = admin_path.exists()

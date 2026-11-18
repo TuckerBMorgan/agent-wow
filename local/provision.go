@@ -39,25 +39,15 @@ func (o *observer) Publish(op uint16, data []byte) error {
 }
 
 type request struct {
-	Action     string     `json:"action"`
-	Username   string     `json:"username"`
-	Password   string     `json:"password"`
-	Name       string     `json:"name"`
-	Race       char.Race  `json:"race_id"`
-	Class      char.Class `json:"class_id"`
-	Appearance struct {
-		Gender      char.Gender `json:"gender"`
-		Skin        uint8       `json:"skin"`
-		Face        uint8       `json:"face"`
-		HairStyle   uint8       `json:"hair_style"`
-		HairColor   uint8       `json:"hair_color"`
-		FacialStyle uint8       `json:"facial_style"`
-	} `json:"appearance"`
-	Command string `json:"command"`
-	Opcode  uint32 `json:"opcode"`
-	Payload string `json:"payload"`
-	Spell   uint32 `json:"spell"`
-	Item    uint32 `json:"item_id"`
+	Action   string             `json:"action"`
+	Username string             `json:"username"`
+	Password string             `json:"password"`
+	Options  char.CreateOptions `json:"options"`
+	Command  string             `json:"command"`
+	Opcode   uint32             `json:"opcode"`
+	Payload  string             `json:"payload"`
+	Spell    uint32             `json:"spell"`
+	Item     uint32             `json:"item_id"`
 }
 
 func itemReputation(data []byte, item uint32) (uint32, uint32, error) {
@@ -139,6 +129,10 @@ func run() error {
 	if err := json.Unmarshal(in.Bytes(), &first); err != nil {
 		return err
 	}
+	options := first.Options
+	if options.Name == nil || options.Race == nil || options.Class == nil {
+		return errors.New("character name, race and class are required")
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	login, err := auth.NewClient("authserver:3724")
@@ -163,39 +157,25 @@ func run() error {
 		return err
 	}
 	defer c.Close()
+	if first.Action == "create" {
+		if _, err = c.Create(ctx, options); err != nil {
+			return err
+		}
+	} else if first.Action != "open" {
+		return errors.New("expected create or open")
+	}
 	characters, err := c.List(ctx)
 	if err != nil {
 		return err
 	}
 	var selected char.Character
 	for _, ch := range characters {
-		if ch.Name == first.Name {
+		if ch.Name == *options.Name {
 			selected = ch
 		}
 	}
-	if selected.GUID == 0 {
-		if first.Action != "create" {
-			return errors.New("unfinished character was not found on the staging account")
-		}
-		a := first.Appearance
-		_, err = c.Create(ctx, char.CreateOptions{Name: &first.Name, Race: &first.Race, Class: &first.Class, Gender: &a.Gender, Skin: &a.Skin, Face: &a.Face, HairStyle: &a.HairStyle, HairColor: &a.HairColor, FacialHair: &a.FacialStyle})
-		if err != nil {
-			return err
-		}
-		// Creation enumerated twice already; the native server permits three per second.
-		time.Sleep(time.Second)
-		characters, err = c.List(ctx)
-		if err != nil {
-			return err
-		}
-		for _, ch := range characters {
-			if ch.Name == first.Name {
-				selected = ch
-			}
-		}
-	}
-	if selected.GUID == 0 || selected.Race != first.Race || selected.Class != first.Class {
-		return errors.New("character creation did not match request")
+	if selected.GUID == 0 || selected.Race != *options.Race || selected.Class != *options.Class {
+		return errors.New("character did not match request")
 	}
 	if err = out.Encode(map[string]any{"ok": true, "name": selected.Name, "guid": uint64(selected.GUID)}); err != nil {
 		return err
@@ -251,7 +231,7 @@ func run() error {
 			var data []byte
 			if r.Action == "chat" {
 				op = 0x95
-				data = chatPacket(r.Command, first.Race)
+				data = chatPacket(r.Command, *options.Race)
 			} else {
 				data, err = hex.DecodeString(r.Payload)
 			}
@@ -263,7 +243,7 @@ func run() error {
 			}
 			if err == nil && r.Action == "chat" {
 				// Chat commands run on the world thread; a time query could overtake them.
-				marker := chatPacket("server info", first.Race)
+				marker := chatPacket("server info", *options.Race)
 				err = session.SendPacket(ctx, 0x95, marker)
 				if err == nil {
 					_, err = o.awaitPacket(ctx, 0x96, 0)
