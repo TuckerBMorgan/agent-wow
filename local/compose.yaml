@@ -47,7 +47,7 @@ services:
     command: [bash, -c, "{ cat /run/secrets/accounts; cat; } | worldserver"]
     stdin_open: true
     secrets: [accounts]
-    volumes: ["./builds:/duel-builds:ro"]
+    volumes: ["${DUEL_BUILDS:?Use local/run.py}:/duel-builds:ro"]
   client-1:
     <<: *client
     environment:
@@ -55,7 +55,7 @@ services:
       WOW_PASSWORD: ${LOCAL_ALPHA_PASSWORD}
     volumes:
       - client-1-duel-workspace:/workspace
-      - ./builds:/workspace/builds:ro
+      - ${DUEL_BUILDS}:/workspace/builds:ro
       - client-1-home:/home/node
       - client-1-modules:/var/lib/docker
   client-2:
@@ -65,7 +65,7 @@ services:
       WOW_PASSWORD: ${LOCAL_BETA_PASSWORD}
     volumes:
       - client-2-duel-workspace:/workspace
-      - ./builds:/workspace/builds:ro
+      - ${DUEL_BUILDS}:/workspace/builds:ro
       - client-2-home:/home/node
       - client-2-modules:/var/lib/docker
 

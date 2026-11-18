@@ -14,6 +14,8 @@ import secrets
 import subprocess
 import sys
 
+from catalog import BUILDS, fetch
+
 
 root = Path(__file__).resolve().parents[1]
 state = root / "tmp/local"
@@ -26,12 +28,15 @@ if not env_file.exists():
               "LOCAL_BETA_PASSWORD": secrets.token_hex(8)}
     env_file.write_text("".join(f"{key}={value}\n" for key, value in values.items()))
 values = dict(line.split("=", 1) for line in env_file.read_text().splitlines())
+values['DUEL_BUILDS'] = str(BUILDS)
+env_file.write_text(''.join(f'{key}={value}\n' for key, value in values.items()))
 (state / "accounts.txt").write_text(
     f"account create LOCALALPHA {values['LOCAL_ALPHA_PASSWORD']}\n"
     f"account create LOCALBETA {values['LOCAL_BETA_PASSWORD']}\n")
 compose = ["docker", "compose", "--env-file", str(env_file), "-f", str(root / "local/compose.yaml")]
 args = sys.argv[1:] or ["up"]
 if args == ["up"]:
+    fetch()
     duel = state / "duel-workspace"
     revision = "3038885c717b6cc79e8ad5ac9f5643e1b3d8e756"
     if not duel.exists():

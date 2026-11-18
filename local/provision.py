@@ -10,9 +10,10 @@ import select
 import subprocess
 import time
 
+from catalog import BUILDS
+
 ROOT = Path(__file__).resolve().parents[1]
 STATE = ROOT / 'tmp/local/provision'
-BUILDS = ROOT / 'local/builds'
 CLIENTS = ('client-1', 'client-2')
 
 
