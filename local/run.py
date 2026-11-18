@@ -38,7 +38,7 @@ args = sys.argv[1:] or ["up"]
 if args == ["up"]:
     fetch()
     duel = state / "duel-workspace"
-    revision = "3038885c717b6cc79e8ad5ac9f5643e1b3d8e756"
+    revision = "02c60989141dc6027784a2920386bfd39c111e4a"
     if not duel.exists():
         subprocess.run(["git", "clone", "--depth", "1",
                         "https://github.com/TuckerBMorgan/agent-wow-workspace-1v1-arena.git", str(duel)], check=True)
