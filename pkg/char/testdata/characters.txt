@@ -1,0 +1,18 @@
+characters.bin is a synthetic, independently encoded build-12340 SMSG_CHAR_ENUM
+payload. It contains two records, not a capture of any user's characters.
+
+Count: 2
+1: GUID 9007199254740993, name Arlen, race 1, class 1, gender 0, level 60,
+   zone 12, map 0.
+2: GUID 99, name Mira, race 11, class 8, gender 1, level 12,
+   zone 3524, map 530.
+
+Both records: appearance bytes 2,3,4,5,6; xyz 1.5,-2.5,3.25;
+guild 100; flags 0x2000; customization 0x10000; first-login 1;
+pet display/level/family 999,20,23. For each of the 23 equipment/bag slots,
+display ID = 1000+slot, inventory type = slot, enchantment = 2000+slot.
+
+Encoding: count u8; per record GUID u64 LE, name UTF-8 plus NUL,
+9 appearance/identity/level bytes, zone/map u32 LE, xyz float32 LE,
+guild/flags/customization u32 LE, first-login u8, three pet u32 LE,
+then 23 repetitions of (u32 LE, u8, u32 LE).

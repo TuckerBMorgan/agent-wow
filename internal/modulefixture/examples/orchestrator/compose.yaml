@@ -1,0 +1,5 @@
+services:
+  module:
+    build: .
+    environment:
+      FIXTURE_DEPENDENCY: worker

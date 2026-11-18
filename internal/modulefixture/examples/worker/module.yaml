@@ -1,0 +1,14 @@
+api_version: 1
+enabled: true
+description: Non-gameplay protocol worker fixture
+compose:
+  file: compose.yaml
+  service: module
+grpc:
+  descriptor_set: module.pb
+rpc:
+  execute: /agentwow.fixture.v1.Fixture/Execute
+packets:
+  SMSG_LOGIN_VERIFY_WORLD: /agentwow.fixture.v1.Fixture/OnPacket
+lifecycle:
+  before_logout: /agentwow.fixture.v1.Fixture/BeforeLogout
