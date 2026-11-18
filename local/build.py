@@ -4,7 +4,6 @@
 from collections import Counter, defaultdict
 import csv
 import json
-from pathlib import Path
 import re
 import struct
 
@@ -63,8 +62,7 @@ def id_list(value, where, length=None):
         integer(entry, where, int(length is None))
 
 
-def read_build(path):
-    build = json.loads(path.read_text())
+def validate(build):
     fields(build, {"race_id", "class_id", "appearance", "equipment", "inventory",
                    "ammo_id", "specializations", "active_specialization", "professions"}, "build")
     for key in ("race_id", "class_id"):
@@ -150,8 +148,8 @@ def check_specializations(build, directory, from_dump=False):
 
 
 
-def observed_build(path, name):
-    tables = defaultdict(list)
+def tables(path):
+    result = defaultdict(list)
     for line in path.read_text().splitlines():
         if not line or line.startswith("IMPORTANT NOTE:"):
             continue
@@ -163,10 +161,15 @@ def observed_build(path, name):
         values = next(csv.reader([values], quotechar="'", escapechar="\\", skipinitialspace=True))
         if len(columns) != len(values):
             raise ValueError(f"Invalid dump row for {table}")
-        tables[table].append(dict(zip(columns, values)))
-    if len(tables["characters"]) != 1:
+        result[table].append(dict(zip(columns, values)))
+    return result
+
+
+def observed_build(path, name):
+    saved = tables(path)
+    if len(saved["characters"]) != 1:
         raise ValueError("Expected exactly one character in the dump")
-    character = tables["characters"][0]
+    character = saved["characters"][0]
     if character["name"] != name or int(character["level"]) != 80 or int(character["online"]):
         raise ValueError("Expected an offline level-80 character with the runner-assigned name")
     if int(character["playerFlags"]) & 8 or int(character["at_login"]):
@@ -174,8 +177,8 @@ def observed_build(path, name):
     guid = character["guid"]
     equipment = dict.fromkeys(SLOTS)
     inventory = []
-    instances = {row["guid"]: row for row in tables["item_instance"]}
-    for location in tables["character_inventory"]:
+    instances = {row["guid"]: row for row in saved["item_instance"]}
+    for location in saved["character_inventory"]:
         row = instances[location["item"]]
         if location["guid"] != guid or row["owner_guid"] != guid:
             raise ValueError("Dump contains inventory owned by another character")
@@ -191,15 +194,15 @@ def observed_build(path, name):
             inventory.append(dict(value, count=int(row["count"])))
     specs = []
     for index in range(int(character["talentGroupsCount"])):
-        glyphs = [row for row in tables["character_glyphs"] if int(row["talentGroup"]) == index]
+        glyphs = [row for row in saved["character_glyphs"] if int(row["talentGroup"]) == index]
         specs.append({
-            "talent_rank_spell_ids": [int(row["spell"]) for row in tables["character_talent"]
+            "talent_rank_spell_ids": [int(row["spell"]) for row in saved["character_talent"]
                                       if int(row["specMask"]) & (1 << index)],
             "glyph_ids": [int(glyphs[0][f"glyph{i}"]) for i in range(1, 7)] if glyphs else [0] * 6,
         })
     appearance = dict(zip(APPEARANCE, map(lambda key: int(character[key]),
         ("gender", "skin", "face", "hairStyle", "hairColor", "facialStyle"))))
-    professions = {row["skill"]: int(row["value"]) for row in tables["character_skills"]
+    professions = {row["skill"]: int(row["value"]) for row in saved["character_skills"]
                    if int(row["skill"]) in PROFESSIONS}
     return {"race_id": int(character["race"]), "class_id": int(character["class"]),
             "appearance": appearance, "equipment": equipment, "inventory": inventory,

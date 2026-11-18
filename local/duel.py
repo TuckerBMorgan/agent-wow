@@ -11,16 +11,7 @@ import secrets
 import time
 
 import provision
-
-
-def rpc(container, method, params=None):
-    body = json.dumps(dict(jsonrpc='2.0', id=1, method='duel.' + method, params=params or {}))
-    data = json.loads(provision.docker('exec', '--user', 'node', container, 'curl', '-fsS',
-        '--max-time', '10', '-H', 'Content-Type: application/json', '-d', body,
-        'http://127.0.0.1:8086/rpc'))
-    if 'error' in data:
-        raise RuntimeError('duel.' + method + ' failed: ' + str(data['error'].get('message', 'RPC error')))
-    return data['result']
+from provision import rpc
 
 
 def staged(state, player):
@@ -51,8 +42,13 @@ def fight(ids, players, seconds):
     started = time.monotonic()
     states = []
 
-    def observe(log):
-        states = [rpc(c, 'status') for c in containers]
+    def observe(log, connecting=False):
+        try:
+            states = [rpc(c, 'duel.status') for c in containers]
+        except RuntimeError:
+            if connecting:  # Login starts the RPC server asynchronously.
+                return []
+            raise
         for state, player in zip(states, players):
             position = state.get('self', {}).get('position')
             if position:
@@ -73,24 +69,24 @@ def fight(ids, players, seconds):
             log.flush()
             result['harness_sha256'] = {p['name']: provision.docker('exec', c, 'sha256sum',
                 '/workspace/modules/duel/harness.py').decode().split()[0] for p, c in zip(players, containers)}
-            deadline = time.monotonic() + 30
+            deadline = time.monotonic() + 90
             while True:
-                states = observe(log)
-                if all(staged(s, p) for s, p in zip(states, players)):
+                states = observe(log, connecting=True)
+                if states and all(staged(s, p) for s, p in zip(states, players)):
                     result['initial_states'] = states
                     break
                 if time.monotonic() >= deadline:
                     raise RuntimeError('Both selected characters did not become ready in Gurubashi Arena')
                 time.sleep(0.5)
             for index, container in enumerate(containers):
-                rpc(container, 'prepare', {'opponent': players[1 - index]['guid']})
+                rpc(container, 'duel.prepare', {'opponent': players[1 - index]['guid']})
             deadline = time.monotonic() + 10  # Equal time for the two harnesses' pre-duel buffs.
             while time.monotonic() < deadline:
                 states = observe(log)
                 time.sleep(0.5)
             if not all(s.get('opponent', {}).get('known') and s.get('prepared') for s in states):
                 raise RuntimeError('The two harnesses did not become ready with a visible opponent')
-            rpc(containers[0], 'challenge')
+            rpc(containers[0], 'duel.challenge')
             print('Duel requested: ' + ' vs '.join(p['name'] for p in players), flush=True)
             deadline = time.monotonic() + 15
             while True:
@@ -122,7 +118,7 @@ def fight(ids, players, seconds):
         result['elapsed_ms'] = (time.monotonic() - started) * 1000
         for container in containers:
             try:
-                rpc(container, 'stop')
+                rpc(container, 'duel.stop')
             except Exception:
                 result.setdefault('cleanup_errors', []).append('Could not stop harness in ' + container)
         provision.save(output / 'result.json', result)
@@ -139,13 +135,11 @@ def fight(ids, players, seconds):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true', help='Validate both builds without provisioning or fighting')
-    parser.add_argument('--resume', action='store_true', help='Resume unfinished same-build characters without replacing them')
     parser.add_argument('--seconds', type=int, default=180, help='Maximum fighting time (default: 180 seconds)')
     args = parser.parse_args()
     if args.seconds <= 0:
         parser.error('--seconds must be positive')
-    provision.main((['--check'] if args.check else []) + (['--resume'] if args.resume else []),
-                   on_ready=lambda ids, players: fight(ids, players, args.seconds))
+    provision.run(check=args.check, on_ready=lambda ids, players: fight(ids, players, args.seconds))
 
 
 if __name__ == '__main__':

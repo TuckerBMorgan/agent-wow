@@ -57,7 +57,7 @@ func TestWaitRejectsServerInventoryFailure(t *testing.T) {
 	o := &observer{packets: make(chan packet, 2)}
 	o.packets <- packet{0x112, []byte{48}}
 	o.packets <- packet{0x1cf, nil}
-	err := o.await(context.Background(), 0x1cf, 0)
+	_, err := o.awaitPacket(context.Background(), 0x1cf, 0)
 	if err == nil || !strings.Contains(err.Error(), "inventory operation rejected") {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestWaitRequiresRequestedSpell(t *testing.T) {
 	o.packets <- packet{0x132, []byte{0, 0, 1, 1, 0, 0, 0}}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
 	defer cancel()
-	if err := o.await(ctx, 0x132, 47898); err == nil {
+	if _, err := o.awaitPacket(ctx, 0x132, 47898); err == nil {
 		t.Fatal("accepted a different spell")
 	}
 }
@@ -78,7 +78,7 @@ func TestChatBarrierRequiresWorldThreadReply(t *testing.T) {
 	o.packets <- packet{0x1cf, nil}
 	o.packets <- packet{0x96, []byte("Other command output")}
 	o.packets <- packet{0x96, []byte("Connected players: 1")}
-	if err := o.await(context.Background(), 0x96, 0); err != nil {
+	if _, err := o.awaitPacket(context.Background(), 0x96, 0); err != nil {
 		t.Fatal(err)
 	}
 	if len(o.packets) != 0 {

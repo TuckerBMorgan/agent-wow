@@ -128,11 +128,6 @@ func (o *observer) awaitPacket(ctx context.Context, op uint16, spell uint32) ([]
 	}
 }
 
-func (o *observer) await(ctx context.Context, op uint16, spell uint32) error {
-	_, err := o.awaitPacket(ctx, op, spell)
-	return err
-}
-
 func run() error {
 	in := bufio.NewScanner(os.Stdin)
 	in.Buffer(make([]byte, 4096), 1<<20)
@@ -171,9 +166,6 @@ func run() error {
 	characters, err := c.List(ctx)
 	if err != nil {
 		return err
-	}
-	if first.Action == "list" {
-		return out.Encode(map[string]any{"ok": true, "characters": characters})
 	}
 	var selected char.Character
 	for _, ch := range characters {
@@ -223,20 +215,16 @@ func run() error {
 		}
 		ctx, done := context.WithTimeout(context.Background(), 35*time.Second)
 		result := map[string]any{"ok": true}
+		if r.Action != "enter" && session == nil {
+			done()
+			return errors.New("no active session")
+		}
 		switch r.Action {
 		case "enter":
 			session, err = c.EnterWorld(ctx, selected.GUID, log, world.Options{Modules: o, EntryTimeout: 30 * time.Second})
 		case "logout":
-			if session == nil {
-				err = errors.New("no active session")
-			} else {
-				err = session.Logout(ctx)
-			}
+			err = session.Logout(ctx)
 		case "item":
-			if session == nil {
-				err = errors.New("no active session")
-				break
-			}
 			data := binary.LittleEndian.AppendUint32(nil, r.Item)
 			data = binary.LittleEndian.AppendUint64(data, 0)
 			err = session.SendPacket(ctx, 0x56, data)
@@ -250,10 +238,6 @@ func run() error {
 				}
 			}
 		case "chat", "packet":
-			if session == nil {
-				err = errors.New("no active session")
-				break
-			}
 			// Discard login chatter before sending a new, ordered request.
 			draining := true
 			for draining {
@@ -275,21 +259,21 @@ func run() error {
 				err = session.SendPacket(ctx, op, data)
 			}
 			if err == nil && r.Spell != 0 {
-				err = o.await(ctx, 0x132, r.Spell)
+				_, err = o.awaitPacket(ctx, 0x132, r.Spell)
 			}
 			if err == nil && r.Action == "chat" {
 				// Chat commands run on the world thread; a time query could overtake them.
 				marker := chatPacket("server info", first.Race)
 				err = session.SendPacket(ctx, 0x95, marker)
 				if err == nil {
-					err = o.await(ctx, 0x96, 0)
+					_, err = o.awaitPacket(ctx, 0x96, 0)
 				}
 			}
 			if err == nil {
 				err = session.SendPacket(ctx, 0x1ce, nil)
 			}
 			if err == nil {
-				err = o.await(ctx, 0x1cf, 0)
+				_, err = o.awaitPacket(ctx, 0x1cf, 0)
 			}
 		default:
 			err = errors.New("unknown provisioning action")

@@ -41,18 +41,23 @@ class DuelTests(unittest.TestCase):
 
     def test_preparation_failure_stops_both_harnesses_and_saves_error(self):
         calls = []
+        connecting = True
 
         def rpc(container, method, params=None):
+            nonlocal connecting
             calls.append((container, method))
-            if method == 'status':
+            if method == 'duel.status':
+                if connecting:
+                    connecting = False
+                    raise RuntimeError('RPC not listening yet')
                 return state(0 if container == 'a' else 1)
-            if method == 'prepare' and container == 'b':
+            if method == 'duel.prepare' and container == 'b':
                 raise RuntimeError('start failed')
             return {}
 
         with tempfile.TemporaryDirectory() as directory, patch.object(duel.provision, 'ROOT', Path(directory)), \
                 patch.object(duel, 'rpc', rpc), patch.object(duel.provision, 'docker', return_value=b'checksum file'), \
-                contextlib.redirect_stdout(io.StringIO()):
+                patch.object(duel.time, 'sleep'), contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaisesRegex(RuntimeError, 'start failed'):
                 duel.fight({'client-1': 'a', 'client-2': 'b'}, PLAYERS, 1)
             results = list(Path(directory).rglob('result.json'))
@@ -60,8 +65,8 @@ class DuelTests(unittest.TestCase):
             result = json.loads(results[0].read_text())
             self.assertEqual(result['outcome'], 'error')
             self.assertEqual(result['error'], 'start failed')
-        self.assertEqual([c for c in calls if c[1] == 'stop'], [('a', 'stop'), ('b', 'stop')])
-        self.assertFalse(any(method == 'challenge' for _, method in calls))
+        self.assertEqual([c for c in calls if c[1] == 'duel.stop'], [('a', 'duel.stop'), ('b', 'duel.stop')])
+        self.assertFalse(any(method == 'duel.challenge' for _, method in calls))
 
 
 if __name__ == '__main__':

@@ -25,7 +25,7 @@ x-client: &client
     worldserver: {condition: service_healthy}
   healthcheck:
     <<: *health
-    test: [CMD, bash, -c, "grep -q 'world session ready' /workspace/logs/session.log && exec 3<>/dev/tcp/127.0.0.1/8086"]
+    test: [CMD, docker, info]
 
 services:
   database:
@@ -52,8 +52,6 @@ services:
     environment:
       WOW_ACCOUNT: LOCALALPHA
       WOW_PASSWORD: ${LOCAL_ALPHA_PASSWORD}
-      WOW_CHARACTER: Localalpha
-      WOW_CLASS: warrior
     volumes:
       - client-1-duel-workspace:/workspace
       - client-1-home:/home/node
@@ -63,8 +61,6 @@ services:
     environment:
       WOW_ACCOUNT: LOCALBETA
       WOW_PASSWORD: ${LOCAL_BETA_PASSWORD}
-      WOW_CHARACTER: Localbeta
-      WOW_CLASS: mage
     volumes:
       - client-2-duel-workspace:/workspace
       - client-2-home:/home/node
