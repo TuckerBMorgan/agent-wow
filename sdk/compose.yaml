@@ -1,0 +1,4 @@
+services:
+  module:
+    image: agent-wow-gameplay:local
+    network_mode: none

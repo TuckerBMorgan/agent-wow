@@ -1,0 +1,73 @@
+api_version: 1
+enabled: true
+description: Shared gameplay observations and script-controlled actions
+compose:
+  file: compose.yaml
+  service: module
+grpc:
+  descriptor_set: module.pb
+rpc:
+  execute: /agentwow.gameplay.v1.Gameplay/Execute
+packets:
+  SMSG_LOGIN_VERIFY_WORLD: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_NEW_WORLD: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_UPDATE_OBJECT: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_COMPRESSED_UPDATE_OBJECT: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_DESTROY_OBJECT: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_MONSTER_MOVE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_FORCE_RUN_SPEED_CHANGE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_FORCE_RUN_BACK_SPEED_CHANGE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_FORCE_WALK_SPEED_CHANGE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_FORCE_SWIM_SPEED_CHANGE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_FORCE_SWIM_BACK_SPEED_CHANGE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_FORCE_TURN_RATE_CHANGE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_FORCE_FLIGHT_SPEED_CHANGE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_FORCE_FLIGHT_BACK_SPEED_CHANGE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_FORCE_PITCH_RATE_CHANGE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  MSG_MOVE_START_FORWARD: /agentwow.gameplay.v1.Gameplay/OnPacket
+  MSG_MOVE_START_BACKWARD: /agentwow.gameplay.v1.Gameplay/OnPacket
+  MSG_MOVE_STOP: /agentwow.gameplay.v1.Gameplay/OnPacket
+  MSG_MOVE_START_STRAFE_LEFT: /agentwow.gameplay.v1.Gameplay/OnPacket
+  MSG_MOVE_START_STRAFE_RIGHT: /agentwow.gameplay.v1.Gameplay/OnPacket
+  MSG_MOVE_STOP_STRAFE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  MSG_MOVE_JUMP: /agentwow.gameplay.v1.Gameplay/OnPacket
+  MSG_MOVE_START_TURN_LEFT: /agentwow.gameplay.v1.Gameplay/OnPacket
+  MSG_MOVE_START_TURN_RIGHT: /agentwow.gameplay.v1.Gameplay/OnPacket
+  MSG_MOVE_STOP_TURN: /agentwow.gameplay.v1.Gameplay/OnPacket
+  MSG_MOVE_SET_FACING: /agentwow.gameplay.v1.Gameplay/OnPacket
+  MSG_MOVE_HEARTBEAT: /agentwow.gameplay.v1.Gameplay/OnPacket
+  MSG_MOVE_TELEPORT_ACK: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_INITIAL_SPELLS: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_LEARNED_SPELL: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_REMOVED_SPELL: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_SPELL_COOLDOWN: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_SPELL_START: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_SPELL_GO: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_CAST_FAILED: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_CREATURE_QUERY_RESPONSE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_GAMEOBJECT_QUERY_RESPONSE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_ITEM_QUERY_SINGLE_RESPONSE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_QUEST_QUERY_RESPONSE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_GOSSIP_MESSAGE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_GOSSIP_COMPLETE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_QUESTGIVER_QUEST_LIST: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_QUESTGIVER_QUEST_DETAILS: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_QUESTGIVER_REQUEST_ITEMS: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_QUESTGIVER_OFFER_REWARD: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_QUERY_QUESTS_COMPLETED_RESPONSE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_QUESTGIVER_QUEST_COMPLETE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_QUESTGIVER_QUEST_INVALID: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_QUESTGIVER_QUEST_FAILED: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_LIST_INVENTORY: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_TRAINER_LIST: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_LOOT_RESPONSE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_LOOT_RELEASE_RESPONSE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_ATTACKSTART: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_ATTACKSTOP: /agentwow.gameplay.v1.Gameplay/OnPacket
+  MSG_CORPSE_QUERY: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_CORPSE_RECLAIM_DELAY: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_INVENTORY_CHANGE_FAILURE: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_BUY_FAILED: /agentwow.gameplay.v1.Gameplay/OnPacket
+  SMSG_SELL_ITEM: /agentwow.gameplay.v1.Gameplay/OnPacket
+lifecycle:
+  before_logout: /agentwow.gameplay.v1.Gameplay/BeforeLogout
