@@ -10,7 +10,6 @@ COPY cmd ./cmd
 COPY internal ./internal
 COPY pkg ./pkg
 COPY api ./api
-COPY sdk ./sdk
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     go build -trimpath -o /out/agent-wow . \
     && GOBIN=/out go install google.golang.org/protobuf/cmd/protoc-gen-go \
@@ -36,7 +35,6 @@ COPY --from=builder /out/ /usr/local/bin/
 ARG WORKSPACE_REF=1c32e7e14265b6945ec3009c4ebbe8d4ae8bbc97
 ADD https://github.com/TuckerBMorgan/agent-wow-workspace.git#${WORKSPACE_REF} /workspace/
 COPY --from=builder /src /workspace/agent-wow
-RUN /opt/venv/bin/pip install --no-cache-dir /workspace/agent-wow/sdk
 ARG AZEROTHCORE_REF=591f79586bbf04e5cdbb2a81bd98c5fd3b7192bd
 RUN git init /opt/azerothcore-reference \
     && git -C /opt/azerothcore-reference remote add origin https://github.com/azerothcore/azerothcore-wotlk.git \
